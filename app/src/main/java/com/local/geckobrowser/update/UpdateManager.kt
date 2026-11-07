@@ -205,8 +205,7 @@ class UpdateManager(private val context: Context) {
         if (incoming.isEmpty()) return "无法读取更新包的签名证书，请重新下载。"
         if (current.isNotEmpty() && current != incoming) {
             return "签名不一致：设备上安装的是旧版（每次随机的 debug 签名），" +
-                "更新包使用了新的固定签名。Android 不允许跨签名覆盖安装。
-" +
+                "更新包使用了新的固定签名。Android 不允许跨签名覆盖安装。\n" +
                 "请先到「设置 → 备份与恢复」导出数据，卸载旧版后安装新包，再导入备份恢复。"
         }
         val uri: Uri = FileProvider.getUriForFile(
