@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gecko 本地浏览器</string>
+    <string name="address_bar">地址栏与搜索</string>
+    <string name="tab_counter">标签页</string>
+</resources>

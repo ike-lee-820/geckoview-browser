@@ -1,0 +1,21 @@
+// GeckoView 仅发布于 Mozilla Maven；两个仓库地址按规格同时声明。
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        maven { url "https://maven.mozilla.org/maven2/" }
+        maven { url "https://maven.mozilla.org/maven2/org/mozilla/geckoview/" }
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "GeckoViewBrowser"
+include ':app'

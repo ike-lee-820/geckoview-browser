@@ -1,0 +1,168 @@
+name: Build GeckoView Browser
+
+# 推送即构建；用户要求「每次代码更新进行构建」，因此去重策略默认关闭（见下方 SKIP_DUP 说明）。
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 创建/更新 Release 与上传 assets，使用内置 GITHUB_TOKEN，无需在仓库中存放任何 PAT。
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ubuntu-latest 默认自带 xmllint；若 runner 镜像更换，需补充 apt-get install libxml2-utils。
+      - name: Ensure xmllint
+        run: |
+          if ! command -v xmllint >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
+          fi
+          xmllint --version 2>&1 | head -1 || true
+
+      - name: Resolve latest GeckoView beta version
+        id: geckoview
+        run: |
+          set -euo pipefail
+          METADATA_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/maven-metadata.xml"
+          curl -sSfL "$METADATA_URL" -o maven-metadata.xml
+          LATEST=$(xmllint --xpath 'string(metadata/versioning/latest)' maven-metadata.xml || true)
+          # 备选解析（xmllint 不可用时）：LATEST=$(awk -F'[<>]' '/<latest>/{print $3}' maven-metadata.xml)
+          if [ -z "$LATEST" ]; then
+            LATEST=$(awk -F'[<>]' '/<latest>/{print $3}' maven-metadata.xml | head -1)
+          fi
+          if [ -z "$LATEST" ]; then
+            echo "Failed to resolve GeckoView latest version" >&2
+            exit 1
+          fi
+
+          # maven-metadata.xml 的 <latest> 可能滞后于实际可下载构建。
+          # 探测对应 AAR 是否存在；404 时回退到 <release> 字段，仍失败则报错提示人工检查。
+          AAR_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/${LATEST}/geckoview-beta-arm64-v8a-${LATEST}.aar"
+          if ! curl -sSfL --max-time 60 --range 0-0 -o /dev/null "$AAR_URL"; then
+            echo "<latest> ${LATEST} 不可下载，尝试 <release> 回退" >&2
+            RELEASE=$(xmllint --xpath 'string(metadata/versioning/release)' maven-metadata.xml || true)
+            if [ -z "$RELEASE" ]; then
+              RELEASE=$(awk -F'[<>]' '/<release>/{print $3}' maven-metadata.xml | head -1)
+            fi
+            if [ -z "$RELEASE" ]; then
+              echo "无法回退到 <release>，请人工检查 maven-metadata.xml 与实际可下载构建" >&2
+              exit 1
+            fi
+            AAR_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/${RELEASE}/geckoview-beta-arm64-v8a-${RELEASE}.aar"
+            if ! curl -sSfL --max-time 60 --range 0-0 -o /dev/null "$AAR_URL"; then
+              echo "<release> ${RELEASE} 同样不可下载，请人工检查" >&2
+              exit 1
+            fi
+            LATEST="$RELEASE"
+          fi
+
+          echo "Resolved GeckoView beta: $LATEST"
+          echo "GECKOVIEW_VERSION=$LATEST" >> "$GITHUB_ENV"
+          echo "GECKOVIEW_VERSION=$LATEST" >> "$GITHUB_OUTPUT"
+
+      # 可选去重开关（默认关闭）：
+      # SKIP_DUP=false 时每次推送都构建，符合用户「每次代码更新进行构建」的要求。
+      # 若改为 true，可在 tag v${GECKOVIEW_VERSION} 已存在且 assets 已有 APK 时跳过；
+      # commit message 含 [force-build] 时强制重建。权衡：开启后会漏掉仅代码变更、内核版本未变的构建。
+      - name: Duplicate guard (disabled by default)
+        run: |
+          SKIP_DUP=false
+          if [ "$SKIP_DUP" = "true" ] && [ "${{ github.ref }}" = "refs/heads/main" ] \
+             && ! echo "${{ github.event.head_commit.message }}" | grep -q '\[force-build\]'; then
+            echo "去重开关已启用时会在此处检查 tag/ assets；当前默认关闭，继续构建。"
+          fi
+          echo "SKIP_DUP=$SKIP_DUP" >> "$GITHUB_ENV"
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
+
+      - name: Grant gradlew executable permission
+        run: chmod +x ./gradlew
+
+      - name: Bootstrap Gradle wrapper jar
+        # 仓库不二进制提交 wrapper jar，避免体积与供应链问题。
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            curl -sSfL -o gradle/wrapper/gradle-wrapper.jar \
+              "https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar"
+          fi
+
+      - name: Build (main -> release, develop -> debug)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ./gradlew assembleRelease --stacktrace --no-daemon
+          else
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          fi
+
+      - name: Rename APK
+        id: artifact
+        run: |
+          set -euo pipefail
+          APK_NAME="geckoview-browser-${GECKOVIEW_VERSION}-${GITHUB_RUN_NUMBER}.apk"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            SRC="app/build/outputs/apk/release/app-release.apk"
+          else
+            SRC="app/build/outputs/apk/debug/app-debug.apk"
+          fi
+          cp "$SRC" "$APK_NAME"
+          ls -lh "$APK_NAME"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: geckoview-browser-${{ steps.geckoview.outputs.GECKOVIEW_VERSION }}-${{ github.run_number }}
+          path: ${{ steps.artifact.outputs.APK_NAME }}
+          retention-days: 7
+          if-no-files-found: error
+
+      # 不使用 Gradle 动态版本语法（"+"），因为无法可靠反向填充 versionName；
+      # versionName 直接等于 GECKOVIEW_VERSION，Gradle 侧变量为空时会显式抛 GradleException。
+      - name: Create or update GitHub Release
+        if: github.ref == 'refs/heads/main' && success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.geckoview.outputs.GECKOVIEW_VERSION }}
+          name: GeckoView Browser ${{ steps.geckoview.outputs.GECKOVIEW_VERSION }}
+          # 同名 tag 已存在时 softprops 会更新该 Release 的 assets，不会创建新 tag。
+          body: |
+            内核版本：GeckoView Beta ${{ steps.geckoview.outputs.GECKOVIEW_VERSION }}
+            Commit：${{ github.sha }}
+            构建时间：${{ github.event.head_commit.timestamp }}
+            构建号：#${{ github.run_number }}
+            说明：完全本地化浏览器，无云端同步；APK 使用 arm64-v8a GeckoView Beta 内核。
+          files: ${{ steps.artifact.outputs.APK_NAME }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

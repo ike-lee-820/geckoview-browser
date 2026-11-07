@@ -1,0 +1,91 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+    id 'com.google.devtools.ksp'
+}
+
+// 版本绝不硬编码：CI 由 maven-metadata.xml 的 <latest> 解析后注入。
+// 不使用 Gradle "+" 动态版本语法，因为无法可靠反向填充 versionName。
+def resolvedGeckoViewVersion = System.getenv("GECKOVIEW_VERSION")
+if (!resolvedGeckoViewVersion) {
+    throw new GradleException("GECKOVIEW_VERSION is not set. CI must resolve latest beta version first.")
+}
+ext {
+    geckoviewArtifact = "geckoview-beta-arm64-v8a"
+    geckoviewVersion = resolvedGeckoViewVersion
+}
+
+android {
+    namespace "com.local.geckobrowser"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.local.geckobrowser"
+        minSdk 26
+        targetSdk 36
+        // versionName 必须直接等于 GECKOVIEW_VERSION，不追加后缀、不截断。
+        versionName resolvedGeckoViewVersion
+        versionCode System.getenv("GITHUB_RUN_NUMBER")?.toInteger() ?: 1
+        ndk { abiFilters "arm64-v8a" }
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "String", "GECKOVIEW_VERSION", "\"${resolvedGeckoViewVersion}\""
+        buildConfigField "String", "UPDATE_REPO", "\"ike-lee-820/geckoview-browser\""
+        buildConfigField "String", "UPDATE_PROXY_BASE", "\"https://v6.gh-proxy.com/https://github.com/\""
+    }
+
+    // 使用 AGP 自动生成的 debug 签名配置，CI 首次构建时会自动创建 debug.keystore。
+    // versionName 严格等于 GECKOVIEW_VERSION，不追加任何后缀。
+    buildTypes {
+        debug {
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose true; buildConfig true }
+    packaging {
+        resources { excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*'] }
+        jniLibs { useLegacyPackaging = true }
+    }
+}
+
+dependencies {
+    // GeckoView Beta，仅 arm64-v8a；版本来自环境变量，禁止 "+" 动态版本。
+    implementation "org.mozilla.geckoview:geckoview-beta-arm64-v8a:${resolvedGeckoViewVersion}"
+
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.activity:activity-compose:1.10.1'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
+    implementation 'androidx.lifecycle:lifecycle-process:2.8.7'
+    implementation 'androidx.navigation:navigation-compose:2.8.9'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation 'androidx.media:media:1.7.0'
+
+    implementation platform('androidx.compose:compose-bom:2025.03.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.foundation:foundation'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+    ksp 'androidx.room:room-compiler:2.6.1'
+    implementation 'androidx.datastore:datastore-preferences:1.1.4'
+    implementation 'androidx.work:work-runtime-ktx:2.10.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+}
