@@ -325,8 +325,9 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshExtensions() {
         viewModelScope.launch {
             val result = GeckoEngine.runtime(context).webExtensionController.list()
-            result.accept { list: Array<WebExtension>? ->
-                _extensions.value = (list ?: emptyArray<WebExtension>()).map { ext ->
+            // webExtensionController.list() 返回 GeckoResult<List<WebExtension>>，accept 的回调参数是 List 而非 Array。
+            result.accept { list: List<WebExtension>? ->
+                _extensions.value = (list ?: emptyList<WebExtension>()).map { ext ->
                     com.local.geckobrowser.data.ExtensionInfo(
                         id = ext.id, name = ext.metaData?.name ?: ext.id,
                         version = ext.metaData?.version ?: "", enabled = ext.metaData?.enabled ?: false,

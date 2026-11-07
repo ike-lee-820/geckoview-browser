@@ -614,7 +614,14 @@ class SelectionActionDelegateImpl(
         session: GeckoSession,
         selection: GeckoSession.SelectionActionDelegate.Selection
     ) {
-        val actions = (selection.availableActions ?: emptyArray<String>()).toList()
+        // availableActions 在不同 Beta 版本中可能是数组、集合或字符串，统一归一化成 List<String>。
+        val rawActions: Any? = selection.availableActions
+        val actions: List<String> = when (rawActions) {
+            is Array<*> -> rawActions.map { it.toString() }
+            is Iterable<*> -> rawActions.map { it.toString() }
+            is String -> listOf(rawActions)
+            else -> emptyList()
+        }
         // 翻译选中文本是应用层动作（本地模型），插入到菜单项列表并由 M3 菜单承载。
         emit(
             EngineEvent.SelectionAction(
