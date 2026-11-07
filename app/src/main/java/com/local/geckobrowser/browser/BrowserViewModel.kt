@@ -11,6 +11,7 @@ import com.local.geckobrowser.GeckoEngine
 import com.local.geckobrowser.data.AppDatabase
 import com.local.geckobrowser.data.DownloadEntity
 import com.local.geckobrowser.data.HistoryEntity
+import com.local.geckobrowser.data.SearchEngineEntity
 import com.local.geckobrowser.diag.CrashReporter
 import com.local.geckobrowser.feature.DownloadRegistry
 import com.local.geckobrowser.feature.DownloadWorker
@@ -58,6 +59,10 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     private val _update = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val update: StateFlow<UpdateState> = _update.asStateFlow()
 
+    /** 本地搜索引擎列表（内置 + 自定义），供设置页展示与管理。 */
+    private val _searchEngines = MutableStateFlow<List<SearchEngineEntity>>(emptyList())
+    val searchEngines: StateFlow<List<SearchEngineEntity>> = _searchEngines.asStateFlow()
+
     private val _bookmarks = MutableStateFlow<List<com.local.geckobrowser.data.BookmarkEntity>>(emptyList())
     val bookmarks: StateFlow<List<com.local.geckobrowser.data.BookmarkEntity>> = _bookmarks.asStateFlow()
 
@@ -104,13 +109,15 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         safeLaunch { db.historyDao().all().collect { _history.value = it } }
         safeLaunch { db.downloadDao().all().collect { _downloads.value = it } }
         safeLaunch { db.siteSettingDao().all().collect { _siteSettings.value = it } }
+        // 搜索引擎列表：内置引擎由 AppDatabase 在打开时 seed，这里只做本地观察。
+        safeLaunch { db.searchEngineDao().all().collect { _searchEngines.value = it } }
 
         // 【修复】原来这里无条件 createSession() + bindActiveSession()，
         // 而 restoreFromDisk 是异步的：有历史快照时它会把刚 open 的占位 session close 掉再
         // recreateSession，构成「open -> close -> open」的 native 竞态，容易触发前台瞬退。
         // 现在创建/绑定完全由 restoreFromDisk 在 Main 线程统一完成（它内部已有空列表兜底）。
         CrashReporter.markStage("viewmodel_restore_start")
-        manager.restoreFromDisk { bindActiveSession() }
+        manager.restoreFromDisk(prefs.cached.value.homePage) { bindActiveSession() }
 
         // 启动时检查更新（可在设置中关闭）；只访问 GitHub Release API，不上传任何本地数据。
         safeLaunch { if (prefs.checkUpdateOnLaunch()) checkForUpdate(manual = false) }
@@ -129,22 +136,38 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     fun submitInput(text: String = _ui.value.input) {
         viewModelScope.launch {
-            val target = if (suggestions.isUrl(text)) suggestions.normalizeUrl(text)
-            else suggestions.searchUrl(text, prefs)
+            // 【修复①】搜索 URL 构造依赖本地 Room；任何异常都必须兜底，
+            // 否则一次数据库异常就会让「输入网址」整件事静默失败，页面毫无反应。
+            val target = runCatching {
+                if (suggestions.isUrl(text)) suggestions.normalizeUrl(text)
+                else suggestions.searchUrl(text, prefs)
+            }.onFailure { t -> CrashReporter.record("submit_input", t, extra = "text=$text") }
+                .getOrElse {
+                    suggestions.builtIn.first().template.replace(
+                        "%s", Uri.encode(text.trim())
+                    )
+                }
             load(target)
             _ui.value = _ui.value.copy(input = target)
         }
     }
 
     fun load(uri: String) {
-        val session = manager.activeSession() ?: return
+        // 【修复①】后台 Session 被内存策略释放后 activeSession() 为 null；
+        // 旧实现直接 return，导致输入网址/点击书签都不加载。这里按需重建。
+        val session = manager.ensureActiveSession()
+        if (session == null) {
+            CrashReporter.record(
+                "load_no_session",
+                extra = "uri=$uri activeTabId=${manager.activeTabId} tabs=${manager.tabs.size}"
+            )
+            return
+        }
+        // 重建过 Session 时同步刷新 StateFlow，AndroidView 才会重新 setSession。
+        bindActiveSession()
         // HTTPS-only 默认开启：在应用层拦截 http:// 并升级；例外列表本地存储，无云端查询。
         val rewritten = applyHttpsOnly(uri)
-        if (rewritten != null && rewritten != uri) {
-            session.loadUri(rewritten)
-        } else {
-            session.loadUri(uri)
-        }
+        if (rewritten != uri) session.loadUri(rewritten) else session.loadUri(uri)
     }
 
     private fun applyHttpsOnly(uri: String): String {
@@ -176,8 +199,10 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun goBack() = manager.activeSession()?.goBack()
     fun goForward() = manager.activeSession()?.goForward()
 
-    fun newTab(url: String = "about:blank", privateMode: Boolean = false, background: Boolean = false): GeckoSession? {
-        val tab = manager.createSession(url, privateMode, activate = !background)
+    /** 新建标签：不传 url 时打开用户在设置里配置的主页（默认 about:blank）。 */
+    fun newTab(url: String? = null, privateMode: Boolean = false, background: Boolean = false): GeckoSession? {
+        val target = url ?: prefs.cached.value.homePage
+        val tab = manager.createSession(target, privateMode, activate = !background)
         if (!background) bindActiveSession()
         return tab.session
     }
@@ -566,6 +591,48 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setToolbarPosition(position: ToolbarPosition) {
         viewModelScope.launch { prefs.setToolbarPosition(position) }
+    }
+
+    // ---------------------------------------------------------------- 主页与搜索引擎（本地）
+
+    /** 主页地址：空串或非法输入统一回退到 about:blank。 */
+    fun setHomePage(url: String) {
+        val value = url.trim().ifBlank { "about:blank" }
+        viewModelScope.launch { prefs.setHomePage(value) }
+    }
+
+    fun setDefaultSearchEngine(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                db.searchEngineDao().clearDefault()
+                db.searchEngineDao().setDefault(id)
+            }.onFailure { t -> CrashReporter.record("set_default_engine", t, extra = "id=$id") }
+        }
+    }
+
+    fun addSearchEngine(name: String, template: String) {
+        // 模板必须含 %s 占位符；自定义引擎只存本地 Room，不经过任何网络。
+        if (name.isBlank() || !template.contains("%s")) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                db.searchEngineDao().insert(
+                    SearchEngineEntity(
+                        id = "custom-${System.currentTimeMillis()}",
+                        name = name.trim(),
+                        template = template.trim(),
+                        isDefault = false,
+                        isCustom = true
+                    )
+                )
+            }.onFailure { t -> CrashReporter.record("add_search_engine", t) }
+        }
+    }
+
+    fun deleteSearchEngine(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { db.searchEngineDao().delete(id) }
+                .onFailure { t -> CrashReporter.record("delete_search_engine", t, extra = "id=$id") }
+        }
     }
 
     private fun bindActiveSession() {

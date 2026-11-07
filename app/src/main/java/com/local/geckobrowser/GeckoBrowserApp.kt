@@ -49,6 +49,9 @@ class GeckoBrowserApp : Application() {
         if (!isMainProcess()) return
 
         CrashReporter.markStage("app_oncreate_start")
+        // 主进程内注入全局 Context：SearchEngineManager.searchUrl 需要读本地 Room，
+        // 放在这里比依赖 Activity/ViewModel 创建顺序更可靠（非主进程不会走到这一步）。
+        com.local.geckobrowser.feature.SearchEngineManager.appContextHolder = applicationContext
         database = AppDatabase.build(this)
         CrashReporter.markStage("database_ready")
         preferences = PreferencesDataStore(this)
@@ -107,28 +110,17 @@ object GeckoEngine {
     }
 
     private fun create(context: Context): GeckoRuntime {
-        // 规格中提到的 TrackingProtectionPolicy 在当前 mozilla-central JavaDoc 中不存在；
-        // 追踪保护由 ContentBlocking.AntiTracking / ContentBlocking.Settings 表达，见 DOCS_READ.md。
-        // 三档策略由应用层 TrackingPolicy 映射到下面的位掩码。
-        val contentBlocking = ContentBlocking.Settings.Builder()
-            .antiTracking(
-                ContentBlocking.AntiTracking.DEFAULT or
-                    ContentBlocking.AntiTracking.AD or
-                    ContentBlocking.AntiTracking.ANALYTIC or
-                    ContentBlocking.AntiTracking.SOCIAL or
-                    ContentBlocking.AntiTracking.FINGERPRINTING or
-                    ContentBlocking.AntiTracking.CRYPTOMINING or
-                    ContentBlocking.AntiTracking.EMAIL
-            )
+        // 【按需求删除追踪保护功能】不再配置 antiTracking 位掩码，也不再提供
+        // STANDARD / STRICT / CUSTOM 三档开关。GeckoSession 侧同步关闭 useTrackingProtection。
+        // 保留下面与追踪保护无关的 Cookie 行为、Safe Browsing 关闭等本地隐私配置。
             .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS)
             // 无云端：不启用远程 Safe Browsing 查询，也不启用全局缓存查询。
             .safeBrowsing(ContentBlocking.SafeBrowsing.NONE)
             .safeBrowsingGlobalCacheEnabled(false)
             .contentBlockingDatabase(false)
-            // 查询参数剥离：无痕模式下默认开启，普通模式由设置项决定是否开启。
-            // 需核对当前 GeckoView Beta 版本 Changelog。
-            .queryParameterStrippingEnabled(true)
-            .queryParameterStrippingPrivateBrowsingEnabled(true)
+            // 查询参数剥离属于反追踪能力，随追踪保护功能一并移除。
+            .queryParameterStrippingEnabled(false)
+            .queryParameterStrippingPrivateBrowsingEnabled(false)
             .build()
 
         // cookieBannerGlobalRulesEnabled 在部分版本中已被移除，本项目不调用。
@@ -145,8 +137,8 @@ object GeckoEngine {
             // 请求「拉取崩溃报告」的通知。只关闭通知，不改崩溃处理链路，符合无云端约束。
             // 需核对当前 GeckoView Beta 版本 Changelog。
             .crashPullNeverShowAgain(true)
-            // 规格中的 trackingProtectionCategories / cookieBehavior 在 RuntimeSettings.Builder 中
-            // 并无同名方法，统一通过 contentBlocking(ContentBlocking.Settings) 注入。
+            // cookieBehavior 等通过 contentBlocking(ContentBlocking.Settings) 注入；
+            // 追踪保护相关配置已按需求移除。
             .build()
 
         val runtime = GeckoRuntime.create(context, settings)

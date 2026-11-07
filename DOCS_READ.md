@@ -870,3 +870,16 @@ at `WebExtensionController.ensureBuiltIn`（堆栈经 `ThreadUtils.assertOnHandl
 **本次代码变更未新增任何 GeckoView API 调用**，仅调整已有调用的进程归属与时机：
 `GeckoRuntime.create()` 只在主进程执行；`GeckoSession.close()` 在 `onTrimMemory` 时由 `TabSessionManager.releaseInactiveSessions()` 调用（原已存在）。
 其余为 Android 系统 API 与本地诊断逻辑，符合第 0.3 节「每个 GeckoView API 调用必须能在 JavaDoc 找到签名」的自检要求。
+
+## 七、本次功能变更核对（2026-11-07）
+
+用户要求：①修复标签页不加载网页 ②可设置主页与搜索引擎 ③删除追踪保护功能 ④底部工具栏随虚拟键盘抬升。
+
+| 项 | 变更 | 涉及的 GeckoView API 核对 |
+|---|---|---|
+| ① | 地址栏补 `ImeAction.Go` / `KeyboardActions`；`load()` 在 `activeSession()` 为 null 时用 `ensureActiveSession()` 重建 Session；`releaseInactiveSessions` 在 activeTabId 未就绪时不释放；`submitInput` 异常兜底 | 仍只调用 `GeckoSession.loadUri(String)`、`GeckoSession.open(GeckoRuntime)`、`GeckoSession.close()`、`GeckoView.setSession(GeckoSession)` / `releaseSession()`，签名与 JavaDoc 一致，未新增 API |
+| ② | DataStore 新增 `home_page`；Room 的 `search_engines` 表在 `RoomDatabase.Callback.onOpen` 幂等 seed 内置引擎；新增默认引擎设置 / 自定义引擎增删 | 全部为 AndroidX Room / DataStore / Compose，未调用 GeckoView API |
+| ③ | 删除 `TrackingPolicy` 三档枚举与设置 UI、DataStore 偏好、`ContentBlocking.Settings.Builder.antiTracking(int)` 调用、`queryParameterStrippingEnabled` 置 false；`GeckoSessionSettings.Builder.useTrackingProtection(false)` | `useTrackingProtection(boolean)` 签名在既有 JavaDoc 核对记录中（见第 693 行）；`antiTracking(...)` 只是「不再调用」，无新增 API。保留 `cookieBehavior`、`safeBrowsing(NONE)` 等与追踪保护无关的本地隐私配置 |
+| ④ | `Scaffold` 增加 `Modifier.imePadding()`，配合既有 `WindowCompat.setDecorFitsSystemWindows(window, false)` 与 `windowSoftInputMode=adjustResize`，底部 bottomBar 随 IME 抬升 | 纯 Compose WindowInsets，未调用 GeckoView API |
+
+未新增任何 `@ExperimentalGeckoViewApi` 调用；所有 GeckoView 调用均可在既有 JavaDoc 核对清单中找到对应签名。

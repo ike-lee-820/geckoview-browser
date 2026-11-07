@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
@@ -43,7 +44,6 @@ import androidx.navigation.NavHostController
 import com.local.geckobrowser.browser.BrowserViewModel
 import com.local.geckobrowser.browser.ThemeMode
 import com.local.geckobrowser.browser.ToolbarPosition
-import com.local.geckobrowser.browser.TrackingPolicy
 import com.local.geckobrowser.data.BackupManager
 import com.local.geckobrowser.data.BrowserPrefs
 import com.local.geckobrowser.update.UpdateState
@@ -66,6 +66,15 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
     var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var exportPass by remember { mutableStateOf("") }
     var importPass by remember { mutableStateOf("") }
+
+    // 【修复②】主页与搜索引擎本地设置。
+    // 内置引擎由 AppDatabase 在打开时 seed 到 Room，这里直接观察 ViewModel 的 StateFlow。
+    val engines by vm.searchEngines.collectAsState()
+    var homeInput by remember { mutableStateOf(prefs.homePage) }
+    LaunchedEffect(prefs.homePage) { homeInput = prefs.homePage }
+    var showAddEngine by remember { mutableStateOf(false) }
+    var engineName by remember { mutableStateOf("") }
+    var engineTemplate by remember { mutableStateOf("") }
 
     val createBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -127,23 +136,59 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                 }
             }
 
-            item { SectionTitle("隐私与安全") }
+            item { SectionTitle("主页") }
             item {
-                SettingsRow("追踪保护") {
-                    Column {
-                        TrackingPolicy.entries.forEach { p ->
-                            TextButton(onClick = {
-                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                                    (vm.manager.context.applicationContext as com.local.geckobrowser.GeckoBrowserApp)
-                                        .preferences.setTrackingPolicy(p)
-                                }
-                            }) { Text(if (prefs.trackingPolicy == p) "● ${p.label()}" else p.label()) }
-                        }
-                        Text("STANDARD 为默认平衡档；STRICT 拦截更多追踪器但可能破坏更多站点；CUSTOM 可逐项选择。",
+                Card(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("新建标签页与启动时打开的页面。填写完整地址（含 https://），或留空使用空白页。",
                             style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(
+                            value = homeInput, onValueChange = { homeInput = it },
+                            label = { Text("主页地址") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                        )
+                        Row(Modifier.padding(top = 8.dp)) {
+                            Button(onClick = { vm.setHomePage(homeInput) }) { Text("保存主页") }
+                            TextButton(onClick = {
+                                homeInput = "about:blank"; vm.setHomePage("about:blank")
+                            }) { Text("使用空白页") }
+                        }
                     }
                 }
             }
+
+            item { SectionTitle("默认搜索引擎") }
+            item {
+                Card(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("地址栏输入非网址文本时使用下面选中的引擎搜索。全部本地存储，不经过云端。",
+                            style = MaterialTheme.typography.bodySmall)
+                        engines.forEach { e ->
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                Text(
+                                    if (e.isDefault) "● ${e.name}" else e.name,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                if (!e.isDefault) {
+                                    TextButton(onClick = { vm.setDefaultSearchEngine(e.id) }) {
+                                        Text("设为默认")
+                                    }
+                                }
+                                if (e.isCustom) {
+                                    IconButton(onClick = { vm.deleteSearchEngine(e.id) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "删除自定义搜索引擎")
+                                    }
+                                }
+                            }
+                        }
+                        TextButton(onClick = { showAddEngine = true }) { Text("添加自定义搜索引擎") }
+                    }
+                }
+            }
+
+            item { SectionTitle("隐私与安全") }
             item {
                 SettingsSwitch("HTTPS-only 模式", prefs.httpsOnly, onToggle = {
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -312,6 +357,43 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
             }
         }
+    }
+
+    if (showAddEngine) {
+        AlertDialog(
+            onDismissRequest = { showAddEngine = false },
+            title = { Text("添加自定义搜索引擎") },
+            text = {
+                Column {
+                    Text("URL 模板必须包含 %s 占位符，例如 https://example.com/search?q=%s",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = engineName, onValueChange = { engineName = it },
+                        label = { Text("名称") }, singleLine = true,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    OutlinedTextField(
+                        value = engineTemplate, onValueChange = { engineTemplate = it },
+                        label = { Text("URL 模板（含 %s）") }, singleLine = true,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    if (engineTemplate.isNotBlank() && !engineTemplate.contains("%s")) {
+                        Text("模板缺少 %s 占位符", color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (engineName.isNotBlank() && engineTemplate.contains("%s")) {
+                        vm.addSearchEngine(engineName, engineTemplate)
+                        showAddEngine = false
+                        engineName = ""; engineTemplate = ""
+                    }
+                }) { Text("添加") }
+            },
+            dismissButton = { TextButton(onClick = { showAddEngine = false }) { Text("取消") } }
+        )
     }
 
     if (exportDialog) {
@@ -504,6 +586,4 @@ fun ExtensionsScreen(vm: BrowserViewModel, nav: NavHostController) {
 }
 private fun ThemeMode.label() = when (this) { ThemeMode.LIGHT -> "浅色"; ThemeMode.DARK -> "深色"; ThemeMode.SYSTEM -> "跟随系统" }
 private fun ToolbarPosition.label() = when (this) { ToolbarPosition.TOP -> "顶部"; ToolbarPosition.BOTTOM -> "底部" }
-private fun TrackingPolicy.label() = when (this) {
-    TrackingPolicy.STANDARD -> "标准"; TrackingPolicy.STRICT -> "严格"; TrackingPolicy.CUSTOM -> "自定义"
-}
+// 追踪保护（TrackingPolicy 三档）已按需求移除。

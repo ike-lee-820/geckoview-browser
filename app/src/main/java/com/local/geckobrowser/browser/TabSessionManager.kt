@@ -59,7 +59,8 @@ class TabSessionManager(
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
             .suspendMediaWhenInactive(true)
             .allowJavascript(true)
-            .useTrackingProtection(true)
+            // 按需求删除追踪保护功能：不再启用会话级跟踪保护。
+            .useTrackingProtection(false)
             .build()
 
         val session = GeckoSession(settings)
@@ -152,7 +153,8 @@ class TabSessionManager(
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
             .suspendMediaWhenInactive(true)
             .allowJavascript(true)
-            .useTrackingProtection(true)
+            // 按需求删除追踪保护功能：重建会话时同样不启用。
+            .useTrackingProtection(false)
             .build()
         val fresh = GeckoSession(settings)
         tab.session = fresh
@@ -173,10 +175,26 @@ class TabSessionManager(
         return fresh
     }
 
+    /**
+     * 【修复①】确保当前标签有可用 Session：后台回收/内存策略释放后，
+     * 输入网址时旧代码直接 `activeSession() ?: return` 静默失败，页面永远空白。
+     * 这里按需重建并重新绑定，元数据（含 URL / 滚动位置）始终保留。
+     */
+    fun ensureActiveSession(): GeckoSession? {
+        val target = tab(activeTabId) ?: tabs.firstOrNull()?.also { activeTabId = it.id }
+            ?: return null
+        return target.session ?: recreateSession(target)
+    }
+
     /** 内存压力策略：只释放后台非固定标签的 Session，元数据保留。 */
     fun releaseInactiveSessions(keepCount: Int = 3) {
-        val candidates = tabs.filter { it.id != activeTabId && !it.isPinned }
-            .sortedBy { it.lastUsed }
+        // 【修复①】activeTabId 尚未就绪（启动恢复是异步的）时绝不释放任何 Session，
+        // 否则会把唯一的激活标签也关掉，导致页面彻底空白。
+        val activeId = activeTabId
+        if (activeId.isBlank() || tab(activeId) == null) return
+        val candidates = tabs.filter {
+            it.id != activeId && !it.isPinned && it.session != null
+        }.sortedBy { it.lastUsed }
             .take((tabs.size - keepCount).coerceAtLeast(0))
         candidates.forEach { releaseSession(it) }
     }
@@ -286,7 +304,7 @@ class TabSessionManager(
     }
 
     // ---------------------------------------------------------------- 恢复
-    fun restoreFromDisk(onRestored: (() -> Unit)? = null) {
+    fun restoreFromDisk(defaultUrl: String = "about:blank", onRestored: (() -> Unit)? = null) {
         scope.launch(Dispatchers.IO) {
             // 数据库读取失败不得让启动流程抛未捕获异常。
             // DAO 方法是 suspend，不能放进 runCatching 的非 suspend lambda 里，改用 try/catch。
@@ -322,7 +340,8 @@ class TabSessionManager(
                         )
                         if (s.isActive) activeTabId = s.id
                     }
-                    if (tabs.isEmpty()) createSession()
+                    // 首次启动/无历史快照时按用户设置的主页打开，而不是固定 about:blank。
+                    if (tabs.isEmpty()) createSession(defaultUrl)
                     else {
                         if (activeTabId.isBlank() || tab(activeTabId) == null) activeTabId = tabs.first().id
                         val active = tab(activeTabId)

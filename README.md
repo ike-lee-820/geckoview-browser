@@ -94,3 +94,11 @@ adb install -r geckoview-browser-latest.apk        # 安装固定签名版，沿
 若仍频繁发生，请在系统「设置 → 电池 / 后台高耗电 / 内存加速白名单 / 允许后台运行」放通本应用。
 
 后台状态下被 SIGKILL 会写 `info-*-background_reclaim.txt`，属于 Android 正常内存回收，无需处理。
+
+## 主页、搜索引擎与工具栏
+
+- **设置 → 主页**：填写完整地址（含 `https://`），或点「使用空白页」回到 `about:blank`。新建标签页与冷启动无历史标签时打开该页面。
+- **设置 → 默认搜索引擎**：内置 Google / DuckDuckGo / Bing / 百度，可切换默认、添加自定义 URL 模板（必须含 `%s`）、删除自定义引擎。全部存本地 Room，不经过云端。内置引擎在数据库打开时幂等写入，不会被覆盖。
+- **地址栏**：输入网址按键盘「前往 / Go」或点「搜索」建议即可导航；非网址文本走当前默认搜索引擎。
+- **工具栏放底部时**：输入网址会随虚拟键盘抬升（`imePadding`），配合 `adjustResize` 生效。
+- 追踪保护（STANDARD / STRICT / CUSTOM 三档）已按需求移除，相关偏好与 `antiTracking` 配置一并删除；Cookie 行为与 Safe Browsing 关闭等本地隐私配置保留。

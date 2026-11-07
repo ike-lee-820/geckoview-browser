@@ -9,9 +9,6 @@ enum class ThemeMode { LIGHT, DARK, SYSTEM }
 /** 工具栏位置。 */
 enum class ToolbarPosition { TOP, BOTTOM }
 
-/** 追踪保护三档：STANDARD 默认平衡档，STRICT 更严格，CUSTOM 逐项选择。 */
-enum class TrackingPolicy { STANDARD, STRICT, CUSTOM }
-
 /** 标签分组：分组不是 GeckoView 原生概念，全部由应用层维护。 */
 data class TabGroupState(
     val id: String,

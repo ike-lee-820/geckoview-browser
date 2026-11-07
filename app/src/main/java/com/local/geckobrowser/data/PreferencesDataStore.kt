@@ -13,7 +13,6 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.local.geckobrowser.browser.ThemeMode
 import com.local.geckobrowser.browser.ToolbarPosition
-import com.local.geckobrowser.browser.TrackingPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -31,9 +30,10 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 data class BrowserPrefs(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val toolbarPosition: ToolbarPosition = ToolbarPosition.TOP,
-    val trackingPolicy: TrackingPolicy = TrackingPolicy.STANDARD,
     val httpsOnly: Boolean = true,
     val httpsExceptions: Set<String> = emptySet(),
+    /** 新建标签页/启动时打开的主页；about:blank 表示空白新标签页。 */
+    val homePage: String = "about:blank",
     val checkUpdateOnLaunch: Boolean = true,
     val updateProxyBase: String = "https://v6.gh-proxy.com/https://github.com/",
     val allowBackgroundAudio: Boolean = true,
@@ -54,9 +54,9 @@ class PreferencesDataStore(private val context: Context) {
     private object Keys {
         val THEME = stringPreferencesKey("theme")
         val TOOLBAR = stringPreferencesKey("toolbar")
-        val TRACKING = stringPreferencesKey("tracking")
         val HTTPS_ONLY = booleanPreferencesKey("https_only")
         val HTTPS_EXCEPTIONS = stringPreferencesKey("https_exceptions")
+        val HOME_PAGE = stringPreferencesKey("home_page")
         val CHECK_UPDATE = booleanPreferencesKey("check_update_on_launch")
         val PROXY_BASE = stringPreferencesKey("update_proxy_base")
         val BG_AUDIO = booleanPreferencesKey("bg_audio")
@@ -96,9 +96,9 @@ class PreferencesDataStore(private val context: Context) {
     private fun decode(p: Preferences): BrowserPrefs = BrowserPrefs(
         themeMode = runCatching { ThemeMode.valueOf(p[Keys.THEME] ?: "SYSTEM") }.getOrDefault(ThemeMode.SYSTEM),
         toolbarPosition = runCatching { ToolbarPosition.valueOf(p[Keys.TOOLBAR] ?: "TOP") }.getOrDefault(ToolbarPosition.TOP),
-        trackingPolicy = runCatching { TrackingPolicy.valueOf(p[Keys.TRACKING] ?: "STANDARD") }.getOrDefault(TrackingPolicy.STANDARD),
         httpsOnly = p[Keys.HTTPS_ONLY] ?: true,
         httpsExceptions = (p[Keys.HTTPS_EXCEPTIONS] ?: "").split('|').filter { it.isNotBlank() }.toSet(),
+        homePage = p[Keys.HOME_PAGE] ?: "about:blank",
         checkUpdateOnLaunch = p[Keys.CHECK_UPDATE] ?: true,
         updateProxyBase = p[Keys.PROXY_BASE] ?: "https://v6.gh-proxy.com/https://github.com/",
         allowBackgroundAudio = p[Keys.BG_AUDIO] ?: true,
@@ -143,13 +143,13 @@ class PreferencesDataStore(private val context: Context) {
 
     suspend fun setThemeMode(mode: ThemeMode) = edit { it[Keys.THEME] = mode.name }
     suspend fun setToolbarPosition(position: ToolbarPosition) = edit { it[Keys.TOOLBAR] = position.name }
-    suspend fun setTrackingPolicy(policy: TrackingPolicy) = edit { it[Keys.TRACKING] = policy.name }
     suspend fun setHttpsOnly(enabled: Boolean) = edit { it[Keys.HTTPS_ONLY] = enabled }
     suspend fun setHttpsException(host: String, allowed: Boolean) = edit {
         val current = _cached.value.httpsExceptions.toMutableSet()
         if (allowed) current.add(host) else current.remove(host)
         it[Keys.HTTPS_EXCEPTIONS] = current.joinToString("|")
     }
+    suspend fun setHomePage(url: String) = edit { it[Keys.HOME_PAGE] = url }
     suspend fun setCheckUpdateOnLaunch(enabled: Boolean) = edit { it[Keys.CHECK_UPDATE] = enabled }
     suspend fun setUpdateProxyBase(base: String) = edit { it[Keys.PROXY_BASE] = base }
     suspend fun setAllowBackgroundAudio(v: Boolean) = edit { it[Keys.BG_AUDIO] = v }

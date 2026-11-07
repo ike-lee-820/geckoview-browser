@@ -12,8 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -73,6 +76,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -171,7 +175,10 @@ fun BrowserScreen(
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize().onPreviewKeyEvent { e ->
+        // 【修复④】Edge-to-edge 下 Scaffold 的 contentWindowInsets 默认不含 IME，
+        // 底部工具栏会被虚拟键盘盖住。给整个 Scaffold 加 imePadding：
+        // 键盘弹起时底部留出 IME 高度，bottomBar 自动抬到键盘上方，内容区同步收缩。
+        modifier = Modifier.fillMaxSize().imePadding().onPreviewKeyEvent { e ->
             if (!e.isCtrlPressed) return@onPreviewKeyEvent false
             when (e.key) {
                 Key.T -> { vm.newTab(); true }
@@ -372,6 +379,7 @@ private fun BrowserToolbar(
     nav: NavHostController,
     onMenu: () -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -380,6 +388,13 @@ private fun BrowserToolbar(
                 onValueChange = { vm.onInput(it) },
                 modifier = Modifier.weight(1f).height(52.dp),
                 singleLine = true,
+                // 【修复①】旧实现没有 ImeAction / KeyboardActions，用户输入网址按回车
+                // 完全没反应，只能点下面的「搜索」AssistChip，看起来像「标签页不加载网页」。
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = {
+                    vm.submitInput()
+                    focusManager.clearFocus()
+                }),
                 textStyle = MaterialTheme.typography.bodyMedium,
                 leadingIcon = {
                     Icon(
