@@ -120,12 +120,12 @@ jobs:
 
       - name: Bootstrap Gradle wrapper jar
         # 仓库不二进制提交 wrapper jar，避免体积与供应链问题。
-        # gradle-wrapper.properties 指向 gradle-8.11.1-bin.zip，与根 build.gradle 的 AGP 8.11.1 匹配。
+        # gradle-wrapper.properties 指向 gradle-8.13-bin.zip：AGP 8.11.1 要求最低 Gradle 8.13。
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             curl -sSfL --retry 3 --connect-timeout 20 --max-time 60 \
               -o gradle/wrapper/gradle-wrapper.jar \
-              "https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar"
+              "https://raw.githubusercontent.com/gradle/gradle/v8.13.0/gradle/wrapper/gradle-wrapper.jar"
           fi
 
       - name: Build (main -> release, develop -> debug)
