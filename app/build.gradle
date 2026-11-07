@@ -18,7 +18,9 @@ ext {
 
 android {
     namespace "com.local.geckobrowser"
-    compileSdk 36
+    // 最新 GeckoView Beta（160+）的 AAR metadata 要求 compileSdk >= 37。
+    // compileSdk 只决定编译期可用的 API，与 targetSdk 解耦：按规格保留 targetSdk 36。
+    compileSdk 37
 
     defaultConfig {
         applicationId "com.local.geckobrowser"
@@ -61,7 +63,12 @@ android {
 
 dependencies {
     // GeckoView Beta，仅 arm64-v8a；版本来自环境变量，禁止 "+" 动态版本。
-    implementation "org.mozilla.geckoview:geckoview-beta-arm64-v8a:${resolvedGeckoViewVersion}"
+    // GeckoView Beta 160 的 POM 会传递 AndroidX 2026 版（core 1.19.1 / lifecycle 2.11.0 等），
+    // 其 AAR metadata 要求 AGP 9.1.0 与 compileSdk 37；本工程按规格锁定 AGP 8.x / Kotlin 2.x。
+    // 排除传递依赖，由应用显式声明的 AndroidX 版本统一提供，避免依赖版本被抬升。
+    implementation("org.mozilla.geckoview:geckoview-beta-arm64-v8a:${resolvedGeckoViewVersion}") {
+        transitive = false
+    }
 
     implementation 'androidx.core:core-ktx:1.15.0'
     implementation 'androidx.appcompat:appcompat:1.7.0'
