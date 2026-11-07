@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write   # 创建/更新 Release 与上传 assets，使用内置 GITHUB_TOKEN，无需在仓库中存放任何 PAT。
+  actions: read     # 签名连续性诊断：读取上一版构建产物，核对证书是否一致。
 
 jobs:
   build:
@@ -175,6 +176,61 @@ jobs:
       # 每次构建都会生成带运行号的新文件名；同名 tag 会不断累积旧 APK，
       # 应用内更新可能误取旧包。发版前清空该 tag 的旧 assets，只保留本次产物
       #（固定名 geckoview-browser-latest.apk 也会先删再传，保证指向最新构建）。
+      # 签名连续性诊断：应用内更新能否覆盖安装，完全取决于新旧 APK 证书是否一致。
+      # 旧版一度复用 AGP 的 debug 签名，而 CI 每次是全新 runner；本步骤下载上一版 artifact
+      # 打印其证书，并报告 runner 是否预置了固定的 ~/.android/debug.keystore，
+      # 结果回写为 commit comment，便于确认是否可以直接覆盖安装而不丢数据。
+      - name: Verify signing continuity (diagnostic)
+        if: github.ref == 'refs/heads/main' && success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          REPORT=""
+          add() { REPORT="$REPORT
+$1"; }
+          add "=== 本次 APK 签名 ==="
+          add "$("$APKSIGNER" verify --print-certs "$APK_NAME" 2>&1 | grep -iE 'SHA-256|Signer #' | head -8)"
+          add "=== 上一版（run22, debug 签名时代）APK 签名 ==="
+          mkdir -p /tmp/prevapk
+          gh run download 42346116379 \
+            -n geckoview-browser-160.0.20261104021706-22 \
+            -D /tmp/prevapk --repo "${{ github.repository }}" 2>&1 | tail -3
+          PREV=$(find /tmp/prevapk -name '*.apk' -type f | head -1)
+          if [ -n "$PREV" ]; then
+            add "prev apk found: $(basename "$PREV")"
+            add "$("$APKSIGNER" verify --print-certs "$PREV" 2>&1 | grep -iE 'SHA-256|Signer #' | head -8)"
+          else
+            add "上一版 artifact 下载失败（可能已过期）"
+          fi
+          add "=== runner 预置 debug.keystore ==="
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            add "$("$JAVA_HOME/bin/keytool" -list -v -keystore "$HOME/.android/debug.keystore" \
+              -storepass android 2>&1 | grep -iE 'Alias name|Owner:|SHA256:' | head -8)"
+          else
+            add "runner 无预置 debug.keystore（说明每次构建随机生成，旧版之间证书也不同）"
+          fi
+          echo "$REPORT"
+          export REPORT
+          python3 - <<'PY'
+          import os, json, urllib.request
+          body = "```\n" + os.environ.get("REPORT", "(empty)")[:50000] + "\n```"
+          data = json.dumps({"body": body}).encode("utf-8")
+          req = urllib.request.Request(
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments",
+              data=data, method="POST",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Content-Type": "application/json",
+                       "Accept": "application/vnd.github+json",
+                       "User-Agent": "ci-signing-diag"})
+          try:
+              print("comment status", urllib.request.urlopen(req, timeout=30).status)
+          except Exception as e:
+              print("comment failed", type(e).__name__, str(e)[:200])
+          PY
+
       - name: Clean previous release assets
         if: github.ref == 'refs/heads/main' && success()
         env:
