@@ -41,15 +41,22 @@ class GeckoBrowserApp : Application() {
     private fun installCrashLogger() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val report = buildString {
+                append("time=").append(java.util.Date()).append('\n')
+                append("thread=").append(thread.name).append('\n')
+                append(android.util.Log.getStackTraceString(throwable))
+            }
+            val stamp = System.currentTimeMillis()
             runCatching {
                 val dir = java.io.File(filesDir, "crashes").apply { mkdirs() }
-                java.io.File(dir, "crash-${System.currentTimeMillis()}.txt").writeText(
-                    buildString {
-                        append("time=").append(java.util.Date()).append('\n')
-                        append("thread=").append(thread.name).append('\n')
-                        append(android.util.Log.getStackTraceString(throwable))
-                    }
-                )
+                java.io.File(dir, "crash-$stamp.txt").writeText(report)
+            }
+            // 外部私有目录无需任何存储权限，用户可用文件管理器直接取出日志。
+            runCatching {
+                getExternalFilesDir(null)?.let { ext ->
+                    val dir = java.io.File(ext, "crashes").apply { mkdirs() }
+                    java.io.File(dir, "crash-$stamp.txt").writeText(report)
+                }
             }
             previous?.uncaughtException(thread, throwable)
         }
