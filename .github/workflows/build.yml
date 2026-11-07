@@ -161,6 +161,20 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # 每次构建都会生成带运行号的新文件名；同名 tag 会不断累积旧 APK，
+      # 应用内更新可能误取旧包。发版前清空该 tag 的旧 assets，只保留本次产物。
+      - name: Clean previous release assets
+        if: github.ref == 'refs/heads/main' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.geckoview.outputs.GECKOVIEW_VERSION }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r name; do
+              [ -n "$name" ] && gh release delete-asset "$TAG" "$name" -y || true
+            done
+          fi
+
       # 不使用 Gradle 动态版本语法（"+"），因为无法可靠反向填充 versionName；
       # versionName 直接等于 GECKOVIEW_VERSION，Gradle 侧变量为空时会显式抛 GradleException。
       - name: Create or update GitHub Release

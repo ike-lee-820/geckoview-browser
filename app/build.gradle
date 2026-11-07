@@ -34,6 +34,8 @@ android {
         buildConfigField "String", "GECKOVIEW_VERSION", "\"${resolvedGeckoViewVersion}\""
         buildConfigField "String", "UPDATE_REPO", "\"ike-lee-820/geckoview-browser\""
         buildConfigField "String", "UPDATE_PROXY_BASE", "\"https://v6.gh-proxy.com/https://github.com/\""
+        // versionName 绑定 GeckoView 内核版本，代码更新时不会变；用运行号判断是否有新构建。
+        buildConfigField "int", "BUILD_NUMBER", "${System.getenv('GITHUB_RUN_NUMBER')?.toInteger() ?: 1}"
     }
 
     // 使用 AGP 自动生成的 debug 签名配置，CI 首次构建时会自动创建 debug.keystore。

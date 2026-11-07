@@ -24,6 +24,7 @@ data class ReleaseInfo(
     val apkName: String,
     val directUrl: String,
     val sizeBytes: Long,
+    val buildNumber: Int,
     val notes: String,
     val publishedAt: String
 )
@@ -66,26 +67,33 @@ class UpdateManager(private val context: Context) {
             var apkName = ""
             var directUrl = ""
             var size = 0L
+            var buildNumber = 0
+            // 同一 tag 下可能残留多个历史构建产物，取运行号最大的那个，避免更新到旧包。
             if (assets != null) {
                 for (i in 0 until assets.length()) {
                     val a = assets.optJSONObject(i) ?: continue
                     val name = a.optString("name")
-                    if (name.endsWith(".apk", ignoreCase = true)) {
+                    if (!name.endsWith(".apk", ignoreCase = true)) continue
+                    val run = name.removeSuffix(".apk").substringAfterLast('-', "0").toIntOrNull() ?: 0
+                    if (run >= buildNumber) {
+                        buildNumber = run
                         apkName = name
                         directUrl = a.optString("browser_download_url")
                         size = a.optLong("size")
-                        break
                     }
                 }
             }
             val version = tag.removePrefix("v")
             val info = ReleaseInfo(
                 tag = tag, version = version, apkName = apkName,
-                directUrl = directUrl, sizeBytes = size,
+                directUrl = directUrl, sizeBytes = size, buildNumber = buildNumber,
                 notes = json.optString("body"), publishedAt = json.optString("published_at")
             )
             latest = info
-            if (directUrl.isBlank() || !isNewer(version, currentVersion)) {
+            // versionName 与内核版本一致，代码更新时版本号不变；因此同时比较构建运行号。
+            val hasNewCore = isNewer(version, currentVersion)
+            val hasNewBuild = buildNumber > BuildConfig.BUILD_NUMBER
+            if (directUrl.isBlank() || (!hasNewCore && !hasNewBuild)) {
                 emit(UpdateState.UpToDate(currentVersion))
             } else {
                 emit(UpdateState.Available(info))
