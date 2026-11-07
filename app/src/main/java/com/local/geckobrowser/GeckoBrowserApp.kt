@@ -113,6 +113,7 @@ object GeckoEngine {
         // 【按需求删除追踪保护功能】不再配置 antiTracking 位掩码，也不再提供
         // STANDARD / STRICT / CUSTOM 三档开关。GeckoSession 侧同步关闭 useTrackingProtection。
         // 保留下面与追踪保护无关的 Cookie 行为、Safe Browsing 关闭等本地隐私配置。
+        val contentBlocking = ContentBlocking.Settings.Builder()
             .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS)
             // 无云端：不启用远程 Safe Browsing 查询，也不启用全局缓存查询。
             .safeBrowsing(ContentBlocking.SafeBrowsing.NONE)
