@@ -131,41 +131,12 @@ jobs:
 
       - name: Build (main -> release, develop -> debug)
         run: |
-          set -o pipefail
+          set -euo pipefail
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build.log
+            ./gradlew assembleRelease --stacktrace --no-daemon
           else
-            ./gradlew assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
+            ./gradlew assembleDebug --stacktrace --no-daemon
           fi
-
-      # 临时诊断步骤：编译失败时把日志尾部回传为 commit comment。
-      # 由于外部网络策略无法直接下载 GitHub job log blob，借 api.github.com 通道取回错误详情。
-      # 定位并修复编译问题后会移除本步骤。
-      - name: Publish failure log (temporary diagnostics)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request, pathlib, subprocess
-          def read(p):
-              return pathlib.Path(p).read_text(encoding="utf-8", errors="replace") if pathlib.Path(p).exists() else "(missing)"
-          try:
-              listing = subprocess.run(["sdkmanager", "--list"], capture_output=True, text=True, timeout=90).stdout
-          except Exception as e:
-              listing = str(e)
-          platforms = "\n".join([l for l in listing.splitlines() if "platforms;android-3" in l][:40])
-          body = "=== SDK PLATFORMS ===\n" + platforms + "\n=== SDK LOG ===\n" + read("sdk.log") + "\n=== BUILD LOG ===\n" + read("build.log")
-          body = "\n".join(body.splitlines()[-500:])[-60000:]
-          data = json.dumps({"body": "```\n" + body + "\n```"}).encode("utf-8")
-          url = "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments"
-          req = urllib.request.Request(url, data=data, method="POST", headers={
-              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-              "Content-Type": "application/json",
-              "Accept": "application/vnd.github+json",
-              "User-Agent": "ci-diag"})
-          print(urllib.request.urlopen(req, timeout=30).status)
-          PY
 
       - name: Rename APK
         id: artifact
