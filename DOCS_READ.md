@@ -858,3 +858,15 @@ at `WebExtensionController.ensureBuiltIn`（堆栈经 `ThreadUtils.assertOnHandl
 `force_stopped_by_system`（写 `info-*.txt` 而非 `crash-*.txt`）、补记去重与 30 秒窗口抑制、
 合并 `session.marker` 单文件、仅主进程写标记。以上均为 Android 系统 API 或本地逻辑，
 未新增任何 GeckoView API 调用。
+
+## 六、SIGKILL 分类与 GeckoRuntime 主进程隔离核对（2026-11-07，分析 build29 日志后）
+
+| # | 文档 | URL | 核对结论 |
+|---|---|---|---|
+| 17 | Android `ApplicationExitInfo` 常量语义（系统 API，非 GeckoView） | Android 11 / API 30+ | `REASON_SIGNALED = 2` + `status = 9` 表示内核/SIGKILL 直接终止；与 native 崩溃信号 `SIGSEGV(11) / SIGABRT(6) / SIGBUS(7) / SIGFPE(8) / SIGILL(4)` 语义不同，系统不生成 tombstone、无堆栈。`REASON_EXIT_SELF = 1` 是主动退出。`REASON_LOW_MEMORY = 3` / `REASON_CRASH = 4` / `REASON_CRASH_NATIVE = 5` / `REASON_ANR = 6` 才属于真实异常退出。 |
+| 18 | GeckoView JavaDoc 包摘要（复核） | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/package-summary.html | `GeckoRuntime` 是启动和初始化 Gecko 的入口，**每个进程只能初始化一次**。GeckoView 会 fork 内容/GPU/socket 子进程，每个子进程都会实例化 `Application`；嵌入方必须按进程名隔离 `Application.onCreate` 的重初始化逻辑，子进程不应持有 `GeckoRuntime`。 |
+| 19 | Android `Application.onTrimMemory` / `ComponentCallbacks2`（系统 API） | Android SDK | 内存紧张时系统的回调；`TRIM_MEMORY_RUNNING_LOW` 及以上应主动释放可重建资源，避免被 lmkd 直接 SIGKILL。本项目在该回调释放后台标签的 `GeckoSession`（已有 API `GeckoSession.close()`），元数据保留。 |
+
+**本次代码变更未新增任何 GeckoView API 调用**，仅调整已有调用的进程归属与时机：
+`GeckoRuntime.create()` 只在主进程执行；`GeckoSession.close()` 在 `onTrimMemory` 时由 `TabSessionManager.releaseInactiveSessions()` 调用（原已存在）。
+其余为 Android 系统 API 与本地诊断逻辑，符合第 0.3 节「每个 GeckoView API 调用必须能在 JavaDoc 找到签名」的自检要求。

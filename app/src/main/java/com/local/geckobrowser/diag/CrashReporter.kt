@@ -85,8 +85,14 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
     private data class ExitSummary(
         val text: String,
         val matched: Boolean,
+        /** 上次进程的系统退出 reason code；-1 表示系统没有该 pid 的记录。 */
+        val reason: Int = -1,
+        /** 退出 status / 信号号；9 = SIGKILL，11 = SIGSEGV，6 = SIGABRT。 */
+        val status: Int = 0,
         val forceStopped: Boolean,
-        val userStopped: Boolean
+        val userStopped: Boolean,
+        /** reason=SIGNALED(2) 且 status=9：系统直接发 SIGKILL，不是应用崩溃。 */
+        val sigkilled: Boolean = false
     )
 
     private data class Reported(
@@ -209,10 +215,12 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                     .append(" free=").append(rt.freeMemory()).append('\n')
                 append("--- end of record ---\n")
             }
-            val prefix = if (tag == "boot") "boot" else if (
-                tag == "force_stopped_by_system" || tag == "user_stopped_app" ||
-                tag == "install_or_update_restart"
-            ) "info" else "crash"
+            // 只有真实异常退出与代码异常才写 crash-*.txt；系统终止类一律写 info-*.txt。
+            val infoTags = setOf(
+                "force_stopped_by_system", "user_stopped_app", "background_reclaim",
+                "killed_by_sigkill", "process_exited_self", "install_or_update_restart"
+            )
+            val prefix = if (tag == "boot") "boot" else if (tag in infoTags) "info" else "crash"
             val fileName = "$prefix-$stamp-$tag.txt"
 
             // 先写最稳的 File 通道，再尝试公共目录；顺序保证私有通道优先成功。
@@ -325,18 +333,27 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         val now = System.currentTimeMillis()
         val elapsed = now - mark.timeMs
 
+        // 【本次修正】SIGKILL(9) 既不是 Java 异常也不是 native 崩溃信号，
+        // 旧实现只要 matched 就写「系统记录了真实异常退出（崩溃…）」，属于误判。
+        // 按状态 + 退出原因精确分类：后台回收 / 前台被 SIGKILL / 主动退出 / 真崩溃。
         val tag = when {
             install.second -> "install_or_update_restart"
             exit.forceStopped -> "force_stopped_by_system"
+            exit.sigkilled && mark.state == "background" -> "background_reclaim"
+            exit.sigkilled -> "killed_by_sigkill"
             exit.userStopped -> "user_stopped_app"
+            exit.reason == 1 -> "process_exited_self"
             exit.matched -> "previous_session_died"
             else -> "previous_session_died_unknown"
         }
 
-        // 系统清理器连杀时会在几秒内产生多个新进程，同类信息 30 秒内只留一条；
-        // 真实崩溃（previous_session_died*）永不抑制，避免漏掉现场。
-        val infoOnly = tag == "force_stopped_by_system" || tag == "user_stopped_app"
-        if (infoOnly && reported.tag == tag && now - reported.timeMs < 30_000L) {
+        // 系统清理器/后台回收会连续拉起多个进程，同类信息 30 秒内只留一条。
+        // 真实崩溃（previous_session_died*）与前台 SIGKILL 永不抑制，避免漏掉现场。
+        val suppressible = tag in setOf(
+            "force_stopped_by_system", "user_stopped_app",
+            "background_reclaim", "process_exited_self"
+        )
+        if (suppressible && reported.tag == tag && now - reported.timeMs < 30_000L) {
             writeReported(reportedFile, signature, tag, now)
             return
         }
@@ -348,8 +365,10 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
             extra = buildString {
                 append("上次进程 pid=").append(mark.pid)
                     .append("，存活标记状态=").append(mark.state)
-                    .append("，最后阶段=").append(mark.stage).append("。\n")
-                append("本次启动距上次标记 ").append(elapsed).append(" ms。\n\n")
+                    .append("，启动流程最后写入阶段=").append(mark.stage).append("。\n")
+                append("本次启动距上次标记 ").append(elapsed).append(" ms。\n")
+                append("注意：stage 标记只覆盖启动流程，启动完成后不再更新；\n")
+                append("它仅表示启动已正常走完，**不代表进程终止点**。\n\n")
                 append("--- 判定 ---\n")
                 when (tag) {
                     "force_stopped_by_system" -> append(
@@ -357,15 +376,32 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                             "属于系统主动终止，**不是应用崩溃**，无需修复代码。\n" +
                             "若希望避免，请在系统「设置 → 电池/后台管理」把本应用加入白名单/允许后台运行。\n"
                     )
+                    "background_reclaim" -> append(
+                        "应用处于后台时被系统发送 SIGKILL(9) 回收，这是 Android 正常的内存管理行为，\n" +
+                            "**不是崩溃**。后台标签元数据已保留，下次打开会按需恢复 Session。\n"
+                    )
+                    "killed_by_sigkill" -> append(
+                        "进程在前台（state=alive）被系统直接发送 SIGKILL(9) 终止。\n" +
+                            "SIGKILL 不是 Java 异常，也不是 native 崩溃信号（SIGSEGV/SIGABRT/SIGBUS），\n" +
+                            "系统不会生成 tombstone，因此**没有堆栈可查**，本条不能当作代码崩溃分析。\n" +
+                            "常见来源：厂商内存管理/后台查杀策略或内核 lmkd；\n" +
+                            "本应用已做主进程隔离与 onTrimMemory 主动释放后台 Session 以降低触发概率。\n" +
+                            "若仍频繁出现，请在系统「设置 → 电池 / 后台高耗电 / 内存加速白名单」放通本应用。\n"
+                    )
                     "user_stopped_app" -> append(
                         "用户主动结束应用（从最近任务划掉等），不是崩溃。\n"
+                    )
+                    "process_exited_self" -> append(
+                        "进程以 EXIT_SELF 主动退出，通常由应用内 killProcess 或系统重启流程触发，不是崩溃。\n"
                     )
                     "install_or_update_restart" -> append(
                         "APK 安装/覆盖更新期间系统包管理器终止旧进程，属于正常重启，不是崩溃。\n"
                     )
                     "previous_session_died" -> append(
-                        "系统记录了真实异常退出（崩溃 / native 信号 / 低内存 / ANR），详见下方退出原因。\n"
-                    )
+                        "系统记录的退出原因为 ").append(reasonName(exit.reason))
+                        .append("(status=").append(exit.status)
+                        .append(" ").append(signalName(exit.status)).append(")。\n")
+                        .append("这属于真实异常退出，请结合下方 trace 与 native tombstone 分析。\n")
                     else -> append(
                         "系统未记录上次进程 pid=").append(mark.pid).append(
                         " 的退出原因。\n" +
@@ -382,6 +418,8 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                 append("\n--- 安装/更新时间（PackageInfo，系统 API，本地读取）---\n")
                     .append(install.first).append('\n')
                 append("--- 系统退出原因（ApplicationExitInfo）---\n").append(exit.text).append('\n')
+                append("说明：SIGKILL 记录的 pss/rss 多为 0KB，是进程被杀后系统补记的占位值，")
+                    .append("不代表崩溃瞬间的内存占用。\n")
             }
         )
     }
@@ -427,9 +465,10 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
     private fun readExitInfo(previousPid: Int): ExitSummary {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return ExitSummary("本机 sdk=${Build.VERSION.SDK_INT} < 30，系统不提供 ApplicationExitInfo。",
-                false, false, false)
+                false, forceStopped = false, userStopped = false)
         }
-        val a = app ?: return ExitSummary("Application 未初始化。", false, false, false)
+        val a = app ?: return ExitSummary("Application 未初始化。", false,
+            forceStopped = false, userStopped = false)
         return runCatching {
             val am = a.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val list = am.getHistoricalProcessExitReasons(a.packageName, 0, 20)
@@ -472,16 +511,31 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                 "(系统未返回任何历史退出记录；vivo/OriginOS 可能未实现或已清理)\n"
             )
             val r = matchedInfo?.reason ?: -1
+            val status = matchedInfo?.status ?: 0
             val desc = matchedInfo?.description.orEmpty()
             val force = r == 10 && (
                 desc.contains("FORCE STOP", true) ||
                     desc.contains("single-cleaner", true) ||
                     desc.contains("force stop", true)
             )
-            ExitSummary(sb.toString(), matchedInfo != null, force, r == 10)
+            // SIGNALED(2) + SIGKILL(9)：系统/内核直接杀进程。
+            // 这不是 Java 异常，也不是 native 崩溃信号（SIGSEGV 11 / SIGABRT 6 / SIGBUS 7），
+            // 系统不会提供 tombstone，日志里自然没有堆栈，不能写成「崩溃」。
+            val sigkilled = r == 2 && status == 9
+            ExitSummary(
+                text = sb.toString(),
+                matched = matchedInfo != null,
+                reason = r,
+                status = status,
+                forceStopped = force,
+                userStopped = r == 10,
+                sigkilled = sigkilled
+            )
         }.getOrElse { t ->
-            ExitSummary("读取 ApplicationExitInfo 失败：${t.javaClass.simpleName}: ${t.message}",
-                false, false, false)
+            ExitSummary(
+                text = "读取 ApplicationExitInfo 失败：${t.javaClass.simpleName}: ${t.message}",
+                matched = false, forceStopped = false, userStopped = false
+            )
         }
     }
 

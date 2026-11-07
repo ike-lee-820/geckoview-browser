@@ -80,3 +80,17 @@ adb install -r geckoview-browser-latest.apk        # 安装固定签名版，沿
 这是系统内存清理器主动终止应用，**不是应用崩溃**，代码侧无法修复。
 请在系统「设置 → 电池 / 后台管理 / 一键清理白名单」里把本应用设为允许后台运行。
 日志模块对这类终止做了去重与 30 秒抑制，不会刷屏，也不会误写成 crash。
+
+## 前台被 SIGKILL(9) 终止
+
+若日志出现 `info-*-killed_by_sigkill.txt`，
+`ApplicationExitInfo` 为 `reason=SIGNALED(2) status=9(signal=SIGKILL)` 且 `description` 为空。
+这**不是应用崩溃**：SIGKILL 由厂商内存管理或内核 lmkd 直接发出，系统不会生成 tombstone，
+因此没有 Java 堆栈也没有 native trace，日志里查不到「崩溃点」。
+
+已做的缓解：只在主进程初始化 `GeckoRuntime`（避免 GeckoView 子进程重复拉起引擎）、
+启动期完全不再弹权限框（避免 Activity pause/resume 反复重建 GeckoView surface）、
+`onTrimMemory` 时主动释放后台标签 Session 以降低内存峰值。
+若仍频繁发生，请在系统「设置 → 电池 / 后台高耗电 / 内存加速白名单 / 允许后台运行」放通本应用。
+
+后台状态下被 SIGKILL 会写 `info-*-background_reclaim.txt`，属于 Android 正常内存回收，无需处理。

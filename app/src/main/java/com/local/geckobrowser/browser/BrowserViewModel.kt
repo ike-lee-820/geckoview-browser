@@ -89,6 +89,11 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         CrashReporter.markStage("viewmodel_init_start")
+        // 系统内存紧张时主动释放后台标签 Session，避免被 lmkd / 厂商策略直接 SIGKILL。
+        // 只释放非激活、非固定标签；元数据保留，切回时 recreateSession 按需恢复。
+        (context.applicationContext as GeckoBrowserApp).memoryPressureHandler = {
+            manager.releaseInactiveSessions(keepCount = 1)
+        }
         SearchEngineManager.appContextHolder = context
         safeLaunch {
             prefs.observe().collect { p ->

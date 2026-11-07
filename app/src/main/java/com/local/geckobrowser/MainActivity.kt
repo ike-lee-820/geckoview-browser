@@ -1,9 +1,7 @@
 package com.local.geckobrowser
 
-import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -29,10 +27,6 @@ class MainActivity : ComponentActivity() {
     private val vm: BrowserViewModel by viewModels()
     private val fileResult = mutableStateOf<android.net.Uri?>(null)
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* 权限结果由 PermissionDelegate 的回调在用户交互时读取系统状态 */ }
-
     private val fileLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri -> if (uri != null) fileResult.value = uri }
@@ -47,13 +41,12 @@ class MainActivity : ComponentActivity() {
         }
         SearchEngineManager.appContextHolder = applicationContext
 
-        // 【修复】启动期不再批量申请 CAMERA / RECORD_AUDIO / ACCESS_FINE_LOCATION。
-        // 日志显示上次进程在 onResume 后 1 秒内、状态仍为 alive 时死亡，且 Java 层无任何异常；
-        // vivo / OriginOS 上一次弹出多个危险权限对话框会让 Activity 连续 pause/resume，
-        // GeckoView 刚 attach 的 surface 反复销毁重建，是前台瞬退的高风险点。
-        // 这三个权限改由 PermissionDelegate.onAndroidPermissionsRequest 在站点真正请求时按需触发。
-        // 仅保留通知权限（单个、Android 13+），且延后到首帧之后。
-        window.decorView.post { requestRuntimePermissions() }
+        // 【本次修复】启动期完全不再弹任何权限框。
+        // 用户 build29 日志显示前台存活约 5 秒后被系统 SIGKILL(9)，最后阶段停在
+        // geckoview_setsession_after。任何权限对话框都会让 Activity 立刻 pause/resume，
+        // GeckoView 刚 attach 的 surface 反复销毁重建，是 vivo 上前台瞬退的高风险点。
+        // CAMERA / RECORD_AUDIO / LOCATION 由 PermissionDelegate 在站点真正请求时按需触发；
+        // POST_NOTIFICATIONS 改由「设置 → 应用内更新」里的按钮由用户显式触发。
         handleIncomingIntent(intent)
 
         CrashReporter.markStage("setcontent_before")
@@ -70,17 +63,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         CrashReporter.markStage("setcontent_after")
-    }
-
-    private fun requestRuntimePermissions() {
-        CrashReporter.markStage("permission_request_before")
-        // 只申请通知权限；摄像头/麦克风/定位由站点触发时按需申请，避免启动期多权限弹窗。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-        }
-        CrashReporter.markStage("permission_request_after")
     }
 
     private fun enterPip() {

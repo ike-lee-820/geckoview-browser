@@ -1,7 +1,9 @@
 package com.local.geckobrowser
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.os.Build
 import com.local.geckobrowser.browser.delegates.AutocompleteStorageDelegateImpl
 import com.local.geckobrowser.data.AppDatabase
 import com.local.geckobrowser.data.PreferencesDataStore
@@ -25,16 +27,32 @@ class GeckoBrowserApp : Application() {
     lateinit var updateManager: UpdateManager
         private set
 
+    /**
+     * 由 BrowserViewModel 注册：系统内存紧张时主动释放后台标签的 GeckoSession，
+     * 降低被 lmkd / 厂商内存策略直接 SIGKILL 的概率。纯应用层逻辑，无 GeckoView API 调用。
+     */
+    @Volatile
+    var memoryPressureHandler: (() -> Unit)? = null
+
     override fun onCreate() {
         super.onCreate()
+        // 先建立本地日志通道：检查上次会话 + 写 boot 自检记录。
+        // CrashReporter 内部自己判主进程，非主进程不会写会话标记。
+        CrashReporter.init(this)
+
+        // 【本次修复】GeckoView 会 fork 内容/GPU/socket 子进程，每个子进程都会实例化
+        // Application 并跑 onCreate。旧实现无条件执行下面的初始化与 GeckoRuntime.create()，
+        // 等于在子进程里也拉起一套 Gecko 引擎与 Room/DataStore 连接：
+        //   - 违反 JavaDoc「GeckoRuntime 每进程只初始化一次」的正确落地（子进程根本不该持有）
+        //   - 叠加 native 内存与线程峰值，容易被 vivo 内存策略直接 SIGKILL(9)
+        // 用户 build29 日志里同一秒有多个 EXIT_SELF 的 pid，正是这些子进程。
+        if (!isMainProcess()) return
+
         CrashReporter.markStage("app_oncreate_start")
         database = AppDatabase.build(this)
         CrashReporter.markStage("database_ready")
         preferences = PreferencesDataStore(this)
         updateManager = UpdateManager(this)
-        // 先建立本地日志通道：检查上次会话 + 写一条 boot 自检记录。
-        // 此处故意不安装全局 UEH，见 CrashReporter 注释。
-        CrashReporter.init(this)
         // 预热 Gecko：可以在真正加载页面前完成初始化，符合包摘要中「预加载 Gecko」的用法。
         // 预热失败必须落盘，否则这类启动期异常只会静默消失。
         CrashReporter.markStage("gecko_runtime_create_before")
@@ -44,6 +62,34 @@ class GeckoBrowserApp : Application() {
         // 关键顺序：GeckoRuntime 会注册自己的 CrashHandler 覆盖全局 UEH，
         // 因此自定义 handler 必须在它之后安装，否则上一次崩溃不会留下任何日志。
         CrashReporter.installHandler()
+    }
+
+    private fun isMainProcess(): Boolean {
+        val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Application.getProcessName()
+        } else {
+            runCatching { java.io.File("/proc/self/cmdline").readText().substringBefore('\u0000') }
+                .getOrDefault(packageName)
+        }
+        return name == packageName
+    }
+
+    /**
+     * Android 系统内存回调（非 GeckoView API）。在进程即将被 lmkd 回收前主动降级：
+     * 释放后台非激活标签的 Session，元数据始终保留，切回时由 TabSessionManager 按需重建。
+     * 这比等着被 SIGKILL(9) 更可控，也避免用户回来时看到整页重载。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level < ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        runCatching { memoryPressureHandler?.invoke() }
+            .onFailure { t -> CrashReporter.record("trim_memory", t, extra = "level=$level") }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        runCatching { memoryPressureHandler?.invoke() }
+            .onFailure { t -> CrashReporter.record("low_memory", t) }
     }
 }
 

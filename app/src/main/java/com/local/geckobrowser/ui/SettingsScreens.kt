@@ -80,6 +80,12 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
             exportPass = ""
         }
     }
+    // 通知权限完全由用户显式触发：启动期弹权限框会让 Activity 立刻 pause/resume，
+    // GeckoView 刚 attach 的 surface 反复重建，在 vivo 上是前台被 SIGKILL 的高风险点。
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 授权结果由系统状态读取，下载/媒体通知模块在真正发通知时自行判断 */ }
+
     val openBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -199,6 +205,14 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                                     vm.installUpdate((update as UpdateState.Ready).apkPath)
                                 }) { Text("立即安装") }
                             }
+                        }
+                        // 下载完成通知与媒体通知依赖 POST_NOTIFICATIONS；由用户主动开启，绝不在启动期弹框。
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            TextButton(onClick = {
+                                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            }) { Text("开启通知权限（下载完成/媒体通知）") }
                         }
                     }
                 }
