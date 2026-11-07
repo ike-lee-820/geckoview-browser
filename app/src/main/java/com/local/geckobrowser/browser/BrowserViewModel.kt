@@ -88,6 +88,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        CrashReporter.markStage("viewmodel_init_start")
         SearchEngineManager.appContextHolder = context
         safeLaunch {
             prefs.observe().collect { p ->
@@ -99,15 +100,18 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         safeLaunch { db.downloadDao().all().collect { _downloads.value = it } }
         safeLaunch { db.siteSettingDao().all().collect { _siteSettings.value = it } }
 
-        // 进程被杀后恢复标签列表、分组结构、激活位置与滚动位置；恢复完成后重新绑定 Session。
+        // 【修复】原来这里无条件 createSession() + bindActiveSession()，
+        // 而 restoreFromDisk 是异步的：有历史快照时它会把刚 open 的占位 session close 掉再
+        // recreateSession，构成「open -> close -> open」的 native 竞态，容易触发前台瞬退。
+        // 现在创建/绑定完全由 restoreFromDisk 在 Main 线程统一完成（它内部已有空列表兜底）。
+        CrashReporter.markStage("viewmodel_restore_start")
         manager.restoreFromDisk { bindActiveSession() }
-        if (manager.tabs.isEmpty()) manager.createSession()
-        bindActiveSession()
 
         // 启动时检查更新（可在设置中关闭）；只访问 GitHub Release API，不上传任何本地数据。
         safeLaunch { if (prefs.checkUpdateOnLaunch()) checkForUpdate(manual = false) }
         // 本地侧载扩展：从 assets 安装内置扩展，不依赖 AMO 远程安装。
         safeLaunch { loadBuiltInExtensions() }
+        CrashReporter.markStage("viewmodel_init_done")
     }
 
     // ---------------------------------------------------------------- 用户动作
@@ -530,9 +534,11 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun bindActiveSession() {
+        CrashReporter.markStage("bind_active_session_before")
         val session = manager.activeSession()
         _session.value = session
         syncActiveTabToUi()
+        CrashReporter.markStage("bind_active_session_after")
     }
 
     private fun syncActiveTabToUi() {

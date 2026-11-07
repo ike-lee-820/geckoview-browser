@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.markStage("activity_oncreate_start")
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -46,11 +47,16 @@ class MainActivity : ComponentActivity() {
         }
         SearchEngineManager.appContextHolder = applicationContext
 
-        // 延后到首帧之后：启动即弹权限框会让 Activity 立刻 pause/resume，
-        // GeckoView 刚 attach 的 surface 被快速销毁重建，部分设备上会触发渲染进程崩溃。
+        // 【修复】启动期不再批量申请 CAMERA / RECORD_AUDIO / ACCESS_FINE_LOCATION。
+        // 日志显示上次进程在 onResume 后 1 秒内、状态仍为 alive 时死亡，且 Java 层无任何异常；
+        // vivo / OriginOS 上一次弹出多个危险权限对话框会让 Activity 连续 pause/resume，
+        // GeckoView 刚 attach 的 surface 反复销毁重建，是前台瞬退的高风险点。
+        // 这三个权限改由 PermissionDelegate.onAndroidPermissionsRequest 在站点真正请求时按需触发。
+        // 仅保留通知权限（单个、Android 13+），且延后到首帧之后。
         window.decorView.post { requestRuntimePermissions() }
         handleIncomingIntent(intent)
 
+        CrashReporter.markStage("setcontent_before")
         setContent {
             val state by vm.ui.collectAsState()
             GeckoBrowserTheme(mode = state.themeMode) {
@@ -63,17 +69,18 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        CrashReporter.markStage("setcontent_after")
     }
 
     private fun requestRuntimePermissions() {
-        val needed = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
-            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.CAMERA)
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.RECORD_AUDIO)
-            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.ACCESS_FINE_LOCATION)
+        CrashReporter.markStage("permission_request_before")
+        // 只申请通知权限；摄像头/麦克风/定位由站点触发时按需申请，避免启动期多权限弹窗。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         }
-        // 媒体通知依赖通知权限开启；WebRTC 需要 CAMERA / RECORD_AUDIO，由应用自行声明。
-        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
+        CrashReporter.markStage("permission_request_after")
     }
 
     private fun enterPip() {
@@ -98,9 +105,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        CrashReporter.markStage("activity_onresume")
         // GeckoView 可能延迟注册自己的 CrashHandler，每次回到前台复检一次。
         CrashReporter.ensureInstalled()
         CrashReporter.markState("alive")
+        CrashReporter.markStage("activity_resumed_ready")
     }
 
     override fun onStop() {

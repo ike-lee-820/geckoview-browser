@@ -819,3 +819,22 @@ setPictureInPictureDelegate(PictureInPictureContr
 GeckoView 的 `CrashHandler`（避免 Socorro 上报）；改用本地 `ContentDelegate.onCrash` / `onKill`、
 ViewModel 事件、启动期兜底异常与进程存活标记四路采集，日志写入 `Download/bcrash`。
 上述两个 API 均**只做签名核对、不在代码中调用**，符合「每个 GeckoView API 调用必须能在 JavaDoc 找到签名」的要求。
+
+## 四、native 崩溃诊断补充核对（2026-11-07，分析 previous_session_died 日志后）
+
+用户设备 vivo V2353A / Android 14 (sdk=34)，日志显示上次进程 `state=alive` 且 pid 在 1 秒内消失、
+Java 层无任何异常记录，判定为 native 级或系统信号终止。为此核对以下文档：
+
+| # | 文档 | URL | 核对结论 |
+|---|---|---|---|
+| 11 | `GeckoRuntime` JavaDoc | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/GeckoRuntime.html | 已核对 `ACTION_CRASHED`、`EXTRA_MINIDUMP_PATH`、`EXTRA_EXTRAS_PATH`、`EXTRA_CRASH_PROCESS_VISIBILITY`、`EXTRA_CRASH_PROCESS_TYPE` 五个常量。崩溃 Intent 的 extras 仅此四项。 |
+| 12 | `GeckoRuntimeSettings.Builder` JavaDoc（复核） | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/GeckoRuntimeSettings.Builder.html | `crashHandler(Class<? extends Service>)` 明确要求「Service 必须运行在与 GeckoRuntime 不同的进程」且「会作为前台服务运行」。**本项目不启用**：独立进程会重复执行 Application.onCreate（进而重复初始化 GeckoRuntime），前台服务又受 vivo 后台策略与通知权限约束，反而引入新的启动期风险。 |
+| 13 | `CrashHandler` JavaDoc（复核） | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/CrashHandler.html | `reportException(Thread, Throwable)` 会 "Report an exception to Socorro"，`createDefaultCrashHandler(Context)` 注册默认处理。因此本项目继续用自定义 UEH 覆盖，不链式调用，保持无云端。 |
+| 14 | Android `ApplicationExitInfo`（系统 API，非 GeckoView） | Android 11 / API 30+ `ActivityManager.getHistoricalProcessExitReasons` | 无需权限、完全本地，可读取 `REASON_CRASH_NATIVE` / `SIGNALED` / `LOW_MEMORY` / `ANR`、信号号、系统描述与 `getTraceInputStream()` tombstone 摘要。用于补齐「补记没有堆栈」的缺口。 |
+
+**本项目实际调用的 GeckoView API 变化**：仅新增
+`GeckoRuntimeSettings.Builder.crashPullNeverShowAgain(true)`（禁用 CrashPullController 请求拉取崩溃报告的通知，
+不改变崩溃处理链路，避免任何云端交互）。已核对该签名存在于 mozilla-central JavaDoc；
+需核对当前 GeckoView Beta 版本 Changelog。
+
+`ACTION_CRASHED` / `EXTRA_*` / `crashHandler(...)` 均**只做签名核对、不在代码中调用**，符合第 0.3 节自检要求。

@@ -27,7 +27,9 @@ class GeckoBrowserApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashReporter.markStage("app_oncreate_start")
         database = AppDatabase.build(this)
+        CrashReporter.markStage("database_ready")
         preferences = PreferencesDataStore(this)
         updateManager = UpdateManager(this)
         // 先建立本地日志通道：检查上次会话 + 写一条 boot 自检记录。
@@ -35,8 +37,10 @@ class GeckoBrowserApp : Application() {
         CrashReporter.init(this)
         // 预热 Gecko：可以在真正加载页面前完成初始化，符合包摘要中「预加载 Gecko」的用法。
         // 预热失败必须落盘，否则这类启动期异常只会静默消失。
+        CrashReporter.markStage("gecko_runtime_create_before")
         runCatching { GeckoEngine.runtime(this) }
             .onFailure { t -> CrashReporter.record("gecko_runtime_init", t) }
+        CrashReporter.markStage("gecko_runtime_create_after")
         // 关键顺序：GeckoRuntime 会注册自己的 CrashHandler 覆盖全局 UEH，
         // 因此自定义 handler 必须在它之后安装，否则上一次崩溃不会留下任何日志。
         CrashReporter.installHandler()
@@ -91,6 +95,10 @@ object GeckoEngine {
             .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
             .fontSizeFactor(1.0f)
             .loginAutofillEnabled(true)
+            // JavaDoc：crashPullNeverShowAgain(boolean) 禁用 CrashPullController.Delegate
+            // 请求「拉取崩溃报告」的通知。只关闭通知，不改崩溃处理链路，符合无云端约束。
+            // 需核对当前 GeckoView Beta 版本 Changelog。
+            .crashPullNeverShowAgain(true)
             // 规格中的 trackingProtectionCategories / cookieBehavior 在 RuntimeSettings.Builder 中
             // 并无同名方法，统一通过 contentBlocking(ContentBlocking.Settings) 注入。
             .build()

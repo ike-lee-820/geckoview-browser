@@ -11,6 +11,7 @@ import com.local.geckobrowser.browser.delegates.ProgressDelegateImpl
 import com.local.geckobrowser.browser.delegates.PromptDelegateImpl
 import com.local.geckobrowser.browser.delegates.SelectionActionDelegateImpl
 import com.local.geckobrowser.data.AppDatabase
+import com.local.geckobrowser.diag.CrashReporter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -74,7 +75,9 @@ class TabSessionManager(
         tabs.add(tab)
         sessionToTab[session] = id
         attachDelegates(id, session)
+        CrashReporter.markStage("session_open_before")
         session.open(runtime)
+        CrashReporter.markStage("session_open_after")
         if (!restoredState.isNullOrBlank()) {
             // SessionState.fromString + restoreState：进程被杀后恢复历史栈与滚动位置。
             runCatching { GeckoSession.SessionState.fromString(restoredState)?.let { session.restoreState(it) } }
@@ -158,7 +161,9 @@ class TabSessionManager(
         attachDelegates(tab.id, fresh)
         // onCrash 后原 Session 已关闭且不可用，必须 open() 重建；无状态会被保留，
         // 因此用本地持久化的 SessionState 恢复，否则重新加载 URL。
+        CrashReporter.markStage("session_recreate_open_before")
         fresh.open(runtime)
+        CrashReporter.markStage("session_recreate_open_after")
         val saved = tab.sessionStateSerialized
         if (!saved.isNullOrBlank()) {
             runCatching { GeckoSession.SessionState.fromString(saved)?.let { fresh.restoreState(it) } }
@@ -290,6 +295,7 @@ class TabSessionManager(
             val groupEntities: List<com.local.geckobrowser.data.TabGroupEntity> =
                 try { database.tabGroupDao().allGroups() } catch (t: Throwable) { emptyList() }
             withContextMain {
+                CrashReporter.markStage("restore_main_start")
                 runCatching {
                     groups.clear()
                     groups.addAll(groupEntities.map { TabGroupState(it.id, it.name, it.colorArgb, it.collapsed) })
@@ -322,14 +328,21 @@ class TabSessionManager(
                         val active = tab(activeTabId)
                         if (active != null && active.session == null) recreateSession(active)
                     }
+                    CrashReporter.markStage("restore_main_done")
+                }.onFailure { t ->
+                    CrashReporter.record("restore_from_disk", t, extra = "阶段=$currentStageForLog()")
                 }
                 runCatching { onRestored?.invoke() }
+                    .onFailure { t -> CrashReporter.record("restore_callback", t) }
+                CrashReporter.markStage("restore_completed")
             }
         }
     }
 
     private suspend fun withContextMain(block: () -> Unit) =
         kotlinx.coroutines.withContext(Dispatchers.Main) { block() }
+
+    private fun currentStageForLog(): String = "restoreFromDisk/Dispatchers.Main"
 
     private fun persistTab(tab: TabState) {
         scope.launch(Dispatchers.IO) { database.tabGroupDao().insertTabSnapshot(tab.toEntity()) }

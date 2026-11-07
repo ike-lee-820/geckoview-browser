@@ -231,8 +231,10 @@ fun BrowserScreen(
                             runCatching { view.releaseSession() }
                         } else if (view.getSession() !== s) {
                             // 崩溃/释放中的 Session 绑定可能抛异常，兜底避免异常冒泡杀掉整个进程。
+                            CrashReporter.markStage("geckoview_setsession_before")
                             runCatching { view.setSession(s) }
                                 .onFailure { t -> CrashReporter.record("set_session", t) }
+                            CrashReporter.markStage("geckoview_setsession_after")
                         }
                     }
                 )
