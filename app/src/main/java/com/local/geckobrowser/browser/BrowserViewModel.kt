@@ -11,6 +11,7 @@ import com.local.geckobrowser.GeckoEngine
 import com.local.geckobrowser.data.AppDatabase
 import com.local.geckobrowser.data.DownloadEntity
 import com.local.geckobrowser.data.HistoryEntity
+import com.local.geckobrowser.diag.CrashReporter
 import com.local.geckobrowser.feature.DownloadRegistry
 import com.local.geckobrowser.feature.DownloadWorker
 import com.local.geckobrowser.feature.SearchEngineManager
@@ -81,7 +82,8 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         try {
             block()
         } catch (t: Throwable) {
-            android.util.Log.w("BrowserViewModel", "启动期异步任务已忽略异常", t)
+            // 原来只打 Log.w，进程被杀后 logcat 随之消失；现在同步落盘到 Download/bcrash。
+            CrashReporter.record("viewmodel_task", t, extra = "启动期异步任务被兜底捕获")
         }
     }
 
@@ -317,7 +319,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         runCatching {
             controller.ensureBuiltIn("resource://android/assets/extensions/readermode/", "reader@local.browser")
             controller.ensureBuiltIn("resource://android/assets/extensions/translate/", "translate@local.browser")
-        }
+        }.onFailure { t -> CrashReporter.record("builtin_extension", t) }
         refreshExtensions()
     }
 
@@ -344,7 +346,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                 }
-            }
+            }.onFailure { t -> CrashReporter.record("extension_list", t) }
         }
     }
 
@@ -417,6 +419,10 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
             is EngineEvent.DynamicToolbar -> if (isActive) _ui.value = _ui.value.copy(showDynamicToolbar = event.show)
             is EngineEvent.FirstContentfulPaint, is EngineEvent.PaintStatusReset -> { /* 首帧状态重置由进度条处理 */ }
             is EngineEvent.Crash -> {
+                CrashReporter.record(
+                    "engine_crash_event",
+                    extra = "tabId=${event.tabId} url=${manager.tab(event.tabId)?.url.orEmpty()}"
+                )
                 manager.tab(event.tabId)?.crashed = true
                 if (isActive) _ui.value = _ui.value.copy(crashTabId = event.tabId)
                 viewModelScope.launch(Dispatchers.IO) { db.crashDao().insert(

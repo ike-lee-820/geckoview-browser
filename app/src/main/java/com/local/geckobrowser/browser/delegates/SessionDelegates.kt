@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import com.local.geckobrowser.browser.EngineEvent
 import com.local.geckobrowser.browser.TabSessionManager
+import com.local.geckobrowser.diag.CrashReporter
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
@@ -146,6 +147,11 @@ class ContentDelegateImpl(
     }
 
     override fun onCrash(session: GeckoSession) {
+        // 内容进程崩溃不走 Java UEH，必须在此同步落盘，否则日志会完全缺失。
+        CrashReporter.record(
+            "gecko_content_crash",
+            extra = "tabId=$tabId url=${manager.tab(tabId)?.url.orEmpty()}"
+        )
         // ContentDelegate.onCrash 发生后 GeckoSession 即关闭且不可用，
         // 不得继续使用已崩溃的 Session；由 ViewModel 展示 M3 崩溃恢复界面后
         // 调用 manager.switchTo -> recreateSession -> open(runtime) + restoreState 恢复。
@@ -154,6 +160,10 @@ class ContentDelegateImpl(
     }
 
     override fun onKill(session: GeckoSession) {
+        CrashReporter.record(
+            "gecko_content_kill",
+            extra = "tabId=$tabId url=${manager.tab(tabId)?.url.orEmpty()}"
+        )
         // 内容进程被系统回收：同样按崩溃路径重建，元数据始终保留。
         manager.tab(tabId)?.crashed = true
         emit(EngineEvent.Crash(tabId))

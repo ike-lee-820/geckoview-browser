@@ -5,4 +5,6 @@
     <files-path name="models" path="models/" />
     <cache-path name="cache" path="/" />
     <external-files-path name="external_downloads" path="Downloads/" />
+    <external-files-path name="bcrash_external" path="Downloads/bcrash/" />
+    <files-path name="bcrash_internal" path="bcrash/" />
 </paths>

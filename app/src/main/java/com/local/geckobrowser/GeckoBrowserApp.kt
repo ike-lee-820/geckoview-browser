@@ -5,6 +5,7 @@ import android.content.Context
 import com.local.geckobrowser.browser.delegates.AutocompleteStorageDelegateImpl
 import com.local.geckobrowser.data.AppDatabase
 import com.local.geckobrowser.data.PreferencesDataStore
+import com.local.geckobrowser.diag.CrashReporter
 import com.local.geckobrowser.update.UpdateManager
 import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.GeckoRuntime
@@ -29,37 +30,16 @@ class GeckoBrowserApp : Application() {
         database = AppDatabase.build(this)
         preferences = PreferencesDataStore(this)
         updateManager = UpdateManager(this)
-        installCrashLogger()
+        // 先建立本地日志通道：检查上次会话 + 写一条 boot 自检记录。
+        // 此处故意不安装全局 UEH，见 CrashReporter 注释。
+        CrashReporter.init(this)
         // 预热 Gecko：可以在真正加载页面前完成初始化，符合包摘要中「预加载 Gecko」的用法。
+        // 预热失败必须落盘，否则这类启动期异常只会静默消失。
         runCatching { GeckoEngine.runtime(this) }
-    }
-
-    /**
-     * 本地崩溃日志：只写入应用私有目录，不上传、不联网。
-     * 用于定位启动后异步阶段（扩展加载 / 会话恢复 / 更新检查）的闪退。
-     */
-    private fun installCrashLogger() {
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            val report = buildString {
-                append("time=").append(java.util.Date()).append('\n')
-                append("thread=").append(thread.name).append('\n')
-                append(android.util.Log.getStackTraceString(throwable))
-            }
-            val stamp = System.currentTimeMillis()
-            runCatching {
-                val dir = java.io.File(filesDir, "crashes").apply { mkdirs() }
-                java.io.File(dir, "crash-$stamp.txt").writeText(report)
-            }
-            // 外部私有目录无需任何存储权限，用户可用文件管理器直接取出日志。
-            runCatching {
-                getExternalFilesDir(null)?.let { ext ->
-                    val dir = java.io.File(ext, "crashes").apply { mkdirs() }
-                    java.io.File(dir, "crash-$stamp.txt").writeText(report)
-                }
-            }
-            previous?.uncaughtException(thread, throwable)
-        }
+            .onFailure { t -> CrashReporter.record("gecko_runtime_init", t) }
+        // 关键顺序：GeckoRuntime 会注册自己的 CrashHandler 覆盖全局 UEH，
+        // 因此自定义 handler 必须在它之后安装，否则上一次崩溃不会留下任何日志。
+        CrashReporter.installHandler()
     }
 }
 

@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.view.WindowCompat
 import com.local.geckobrowser.browser.BrowserViewModel
+import com.local.geckobrowser.diag.CrashReporter
 import com.local.geckobrowser.feature.SearchEngineManager
 import com.local.geckobrowser.ui.AppNavHost
 import com.local.geckobrowser.ui.theme.GeckoBrowserTheme
@@ -95,13 +96,24 @@ class MainActivity : ComponentActivity() {
         if (!uri.isNullOrBlank()) vm.load(uri)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // GeckoView 可能延迟注册自己的 CrashHandler，每次回到前台复检一次。
+        CrashReporter.ensureInstalled()
+        CrashReporter.markState("alive")
+    }
+
     override fun onStop() {
+        CrashReporter.markState("background")
         super.onStop()
         vm.manager.persistAll()
     }
 
     override fun onDestroy() {
-        if (isFinishing) vm.runExitCleanup()
+        if (isFinishing) {
+            CrashReporter.markState("finished")
+            vm.runExitCleanup()
+        }
         super.onDestroy()
     }
 }

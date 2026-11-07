@@ -805,3 +805,17 @@ setNavigationDelegate(GeckoSession.NavigationDelegate)
 setPermissionDelegate(GeckoSession.PermissionDelegate)
 setPictureInPictureDelegate(PictureInPictureContr
 ```
+
+## 三、崩溃处理 API 补充核对（2026-11-07，修复日志不可靠问题时）
+
+| # | 文档 | URL | 核对结论 |
+|---|---|---|---|
+| 9 | `GeckoRuntimeSettings.Builder` JavaDoc | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/GeckoRuntimeSettings.Builder.html | 已核对 `crashHandler(Class<? extends Service> handler)` 签名：崩溃时以 `GeckoRuntime.ACTION_CRASHED` 启动指定 Service，extras 含 `EXTRA_MINIDUMP_PATH`。本项目**不调用**该方法——它会启动上报链路，与「无云端」约束冲突。 |
+| 10 | `CrashHandler` JavaDoc | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/CrashHandler.html | 已核对：`org.mozilla.geckoview.CrashHandler implements Thread.UncaughtExceptionHandler`；构造器 `CrashHandler(Context, Class<? extends Service>)` 会 "Create and register a CrashHandler for all threads"；`createDefaultCrashHandler(Context)`；`reportException(Thread, Throwable)` 会 "Report an exception to Socorro"；`uncaughtException(Thread, Throwable)`。该类未标注 `@ExperimentalGeckoViewApi`。 |
+
+**由此确认的根因**：GeckoRuntime 初始化会注册自己的全局 `Thread.UncaughtExceptionHandler`，
+旧实现把自定义 handler 装在 `GeckoEngine.runtime()` 之前，被直接覆盖，导致上一次崩溃没有留下任何日志。
+本项目因此改为：Gecko 初始化之后安装自定义 handler + `Activity.onResume` 复检；不链式调用
+GeckoView 的 `CrashHandler`（避免 Socorro 上报）；改用本地 `ContentDelegate.onCrash` / `onKill`、
+ViewModel 事件、启动期兜底异常与进程存活标记四路采集，日志写入 `Download/bcrash`。
+上述两个 API 均**只做签名核对、不在代码中调用**，符合「每个 GeckoView API 调用必须能在 JavaDoc 找到签名」的要求。

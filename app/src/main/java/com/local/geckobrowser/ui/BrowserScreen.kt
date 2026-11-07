@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavHostController
 import com.local.geckobrowser.browser.BrowserViewModel
+import com.local.geckobrowser.diag.CrashReporter
 import com.local.geckobrowser.browser.EngineEvent
 import com.local.geckobrowser.browser.ToolbarPosition
 import com.local.geckobrowser.feature.PrintAndPdf
@@ -231,6 +232,7 @@ fun BrowserScreen(
                         } else if (view.getSession() !== s) {
                             // 崩溃/释放中的 Session 绑定可能抛异常，兜底避免异常冒泡杀掉整个进程。
                             runCatching { view.setSession(s) }
+                                .onFailure { t -> CrashReporter.record("set_session", t) }
                         }
                     }
                 )
