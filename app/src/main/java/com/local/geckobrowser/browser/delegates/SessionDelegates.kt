@@ -10,7 +10,6 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.WebRequestError
 import org.mozilla.geckoview.WebResponse
 import org.mozilla.geckoview.SlowScriptResponse
-import org.mozilla.geckoview.SlowScriptResponse
 import java.util.UUID
 
 /**

@@ -8,6 +8,7 @@ import com.local.geckobrowser.data.PreferencesDataStore
 import com.local.geckobrowser.data.SearchEngineEntity
 import com.local.geckobrowser.browser.TabState
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.Locale
 

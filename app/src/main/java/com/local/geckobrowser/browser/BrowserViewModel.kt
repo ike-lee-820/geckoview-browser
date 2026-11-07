@@ -21,10 +21,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.SessionFinder
@@ -323,11 +325,11 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshExtensions() {
         viewModelScope.launch {
             val result = GeckoEngine.runtime(context).webExtensionController.list()
-            result.accept { list ->
-                _extensions.value = (list ?: emptyArray()).map {
+            result.accept { list: Array<WebExtension>? ->
+                _extensions.value = (list ?: emptyArray<WebExtension>()).map { ext ->
                     com.local.geckobrowser.data.ExtensionInfo(
-                        id = it.id, name = it.metaData?.name ?: it.id,
-                        version = it.metaData?.version ?: "", enabled = it.metaData?.enabled ?: false,
+                        id = ext.id, name = ext.metaData?.name ?: ext.id,
+                        version = ext.metaData?.version ?: "", enabled = ext.metaData?.enabled ?: false,
                         allowedInPrivate = false
                     )
                 }

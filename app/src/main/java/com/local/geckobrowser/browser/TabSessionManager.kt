@@ -77,7 +77,7 @@ class TabSessionManager(
         session.open(runtime)
         if (!restoredState.isNullOrBlank()) {
             // SessionState.fromString + restoreState：进程被杀后恢复历史栈与滚动位置。
-            runCatching { session.restoreState(GeckoSession.SessionState.fromString(restoredState)) }
+            runCatching { GeckoSession.SessionState.fromString(restoredState)?.let { session.restoreState(it) } }
         } else if (url != "about:blank") {
             session.loadUri(url)
         }
@@ -161,7 +161,7 @@ class TabSessionManager(
         fresh.open(runtime)
         val saved = tab.sessionStateSerialized
         if (!saved.isNullOrBlank()) {
-            runCatching { fresh.restoreState(GeckoSession.SessionState.fromString(saved)) }
+            runCatching { GeckoSession.SessionState.fromString(saved)?.let { fresh.restoreState(it) } }
         } else if (tab.url != "about:blank") {
             fresh.loadUri(tab.url)
         }
@@ -222,17 +222,6 @@ class TabSessionManager(
     ).also {
         it.title = record.title
         recentClosed.remove(record)
-    }
-
-    /** NavigationDelegate.onNewSession：由应用层创建并返回新的 GeckoSession。 */
-    fun createForNavigation(uri: String, fromTabId: String): GeckoSession? {
-        val source = tab(fromTabId)
-        return createSession(
-            url = uri,
-            isPrivate = source?.isPrivate ?: false,
-            groupId = source?.groupId,
-            activate = false
-        ).session
     }
 
     /** NavigationDelegate.onNewSession：由应用层创建并返回新的 GeckoSession。 */

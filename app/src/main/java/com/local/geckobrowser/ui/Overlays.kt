@@ -68,7 +68,7 @@ fun ReaderModeOverlay(article: ReaderModeExtractor.Article, onClose: () -> Unit)
     val textColor = if (bg == Color.Black || bg == Color(0xFF121212)) Color.White else Color(0xFF202020)
     Column(Modifier.fillMaxSize().background(bg).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("阅读模式", style = MaterialTheme.typography.titleMedium, Modifier.weight(1f), color = textColor)
+            Text("阅读模式", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = textColor)
             IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "退出阅读模式") }
         }
         Text("字体 ${(16 * fontScale).toInt()}", color = textColor)
@@ -97,7 +97,7 @@ fun TranslationSheet(vm: BrowserViewModel, onClose: () -> Unit) {
     Card(Modifier.fillMaxWidth().padding(12.dp)) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("本地翻译", style = MaterialTheme.typography.titleMedium, Modifier.weight(1f))
+                Text("本地翻译", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "关闭翻译") }
             }
             Text("模型在本机运行，不调用云端翻译 API；模型体积和性能因设备而异。",

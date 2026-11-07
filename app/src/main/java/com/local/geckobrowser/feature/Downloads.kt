@@ -102,7 +102,7 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) :
                         var windowBytes = 0L
                         while (true) {
                             if (DownloadControl.isPaused(id) || DownloadControl.isCancelled(id)) break
-                            val n = input.read(buf)
+                            val n = input?.read(buf) ?: -1
                             if (n < 0) break
                             out.write(buf, 0, n)
                             received += n

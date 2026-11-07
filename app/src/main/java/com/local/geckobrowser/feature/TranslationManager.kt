@@ -4,6 +4,7 @@ import android.app.Application
 import com.local.geckobrowser.data.AppDatabase
 import com.local.geckobrowser.data.TranslationModelEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import org.mozilla.geckoview.TranslationsController
 

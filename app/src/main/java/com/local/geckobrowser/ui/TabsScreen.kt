@@ -131,8 +131,10 @@ private fun TabCard(
     id: String, title: String, url: String, groupId: String?,
     vm: BrowserViewModel, selected: Set<String>, onSelect: (String, Boolean) -> Unit
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        onClick = { vm.switchTab(id) }) {
+    Card(
+        onClick = { vm.switchTab(id) },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (groupId != null) {
                 val color = vm.manager.groups.firstOrNull { it.id == groupId }?.colorArgb ?: 0xFF1B5E20

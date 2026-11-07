@@ -614,7 +614,7 @@ class SelectionActionDelegateImpl(
         session: GeckoSession,
         selection: GeckoSession.SelectionActionDelegate.Selection
     ) {
-        val actions = (selection.availableActions ?: emptyArray()).toList()
+        val actions = (selection.availableActions ?: emptyArray<String>()).toList()
         // 翻译选中文本是应用层动作（本地模型），插入到菜单项列表并由 M3 菜单承载。
         emit(
             EngineEvent.SelectionAction(

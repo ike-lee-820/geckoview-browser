@@ -59,8 +59,13 @@ fun BookmarksScreen(vm: BrowserViewModel, nav: NavHostController) {
         }
     }) { padding ->
         if (shown.isEmpty()) {
-            EmptyState("暂无书签", "可在地址栏菜单中添加，或从本地 HTML 文件导入", Icons.Default.Bookmark,
-                "添加当前页面") { vm.addBookmark() }
+            EmptyState(
+                title = "暂无书签",
+                message = "可在地址栏菜单中添加，或从本地 HTML 文件导入",
+                icon = Icons.Default.Bookmark,
+                actionLabel = "添加当前页面",
+                onAction = { vm.addBookmark() }
+            )
         } else {
             LazyColumn(Modifier.padding(padding)) {
                 items(shown) { b ->

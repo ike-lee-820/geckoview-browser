@@ -9,8 +9,10 @@ import com.local.geckobrowser.data.PasswordCrypto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.Autocomplete
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
@@ -155,9 +157,9 @@ class WebExtensionDelegatesImpl(
         // 扩展请求新标签：由应用层创建 Session（GeckoView 没有标签概念）。
         val tab = manager.createSession(
             url = createDetails.url.orEmpty().ifBlank { "about:blank" },
-            activate = createDetails.active
+            activate = createDetails.active ?: false
         )
-        if (createDetails.openInReaderMode) tab.readerModeActive = true
+        if (createDetails.openInReaderMode == true) tab.readerModeActive = true
         return GeckoResult.fromValue(tab.session)
     }
 
@@ -199,19 +201,21 @@ class WebExtensionDelegatesImpl(
         extension: WebExtension, action: WebExtension.Action
     ): GeckoResult<GeckoSession> = onOpenPopup(extension, action)
 
-    override fun onCloseTab(source: WebExtension, session: GeckoSession) {
+    override fun onCloseTab(source: WebExtension?, session: GeckoSession): GeckoResult<AllowOrDeny> {
         manager.tabIdFor(session)?.let { manager.closeTab(it) }
+        return GeckoResult.fromValue(AllowOrDeny.ALLOW)
     }
 
     override fun onUpdateTab(
         source: WebExtension,
         session: GeckoSession,
         updateDetails: WebExtension.UpdateTabDetails
-    ) {
+    ): GeckoResult<AllowOrDeny> {
         // 扩展更新标签：把最新 URL 同步回应用层元数据。
         manager.tabIdFor(session)?.let { id ->
             updateDetails.url?.let { url -> manager.tab(id)?.url = url }
         }
+        return GeckoResult.fromValue(AllowOrDeny.ALLOW)
     }
 
     // AddonManagerDelegate：扩展生命周期全部路由到 ViewModel，刷新扩展管理界面。
@@ -225,8 +229,8 @@ class WebExtensionDelegatesImpl(
     override fun onUninstalling(extension: WebExtension) { emit(EngineEvent.ExtensionStateChanged(extension.id, "卸载中")) }
     override fun onReady(extension: WebExtension) { emit(EngineEvent.ExtensionStateChanged(extension.id, "就绪")) }
     override fun onInstallationFailed(
-        extension: WebExtension, error: WebExtension.InstallException
-    ) { emit(EngineEvent.ExtensionStateChanged(extension.id, "安装失败")) }
+        extension: WebExtension?, error: WebExtension.InstallException
+    ) { emit(EngineEvent.ExtensionStateChanged(extension?.id ?: "unknown", "安装失败")) }
     override fun onOptionalPermissionsChanged(extension: WebExtension) {
         emit(EngineEvent.ExtensionStateChanged(extension.id, "权限变更"))
     }
@@ -273,7 +277,7 @@ class TranslationSessionDelegate(
 
     override fun onTranslationStateChange(
         session: GeckoSession,
-        state: TranslationsController.SessionTranslation.TranslationState
+        state: TranslationsController.SessionTranslation.TranslationState?
     ) {
         // 原文/译文切换状态由本地模型回调驱动，写入 UI 状态。
         emit(EngineEvent.TranslationState(tabId, canTranslate = true, offered = false, state = state.toString()))

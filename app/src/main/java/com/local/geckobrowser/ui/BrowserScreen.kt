@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.KeyEvent
 import android.widget.Toast
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -139,7 +140,9 @@ fun BrowserScreen(
                 is EngineEvent.ContextMenu -> contextMenu = ev
                 is EngineEvent.TranslationState -> translateAvailable = ev.canTranslate
                 is EngineEvent.PictureInPicture -> { canPip = ev.enter; if (ev.enter) onEnterPip() }
-                is EngineEvent.TranslationRequest -> { vm.translationManager.translateSelection(ev.text, "en", "zh").collect { } }
+                is EngineEvent.TranslationRequest -> {
+                    launch { vm.translationManager.translateSelection(ev.text, "en", "zh").collect { } }
+                }
                 is EngineEvent.ShareText -> {
                     val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                         type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, ev.text)
