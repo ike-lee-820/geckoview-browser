@@ -68,12 +68,22 @@ class UpdateManager(private val context: Context) {
             var directUrl = ""
             var size = 0L
             var buildNumber = 0
-            // 同一 tag 下可能残留多个历史构建产物，取运行号最大的那个，避免更新到旧包。
+            var fixedUrl = ""
+            var fixedSize = 0L
+            val fixedName = "geckoview-browser-latest.apk"
+            // 运行号取自带 -数字 的归档包；下载地址优先用固定名包（链接恒定、便于 CDN 缓存）。
+            // 两者内容完全相同，都由同一次构建、同一签名证书产出。
             if (assets != null) {
                 for (i in 0 until assets.length()) {
                     val a = assets.optJSONObject(i) ?: continue
                     val name = a.optString("name")
                     if (!name.endsWith(".apk", ignoreCase = true)) continue
+                    if (name.equals(fixedName, ignoreCase = true)) {
+                        fixedUrl = a.optString("browser_download_url")
+                        fixedSize = a.optLong("size")
+                        continue
+                    }
+                    // 同一 tag 下可能残留多个历史构建产物，取运行号最大的那个。
                     val run = name.removeSuffix(".apk").substringAfterLast('-', "0").toIntOrNull() ?: 0
                     if (run >= buildNumber) {
                         buildNumber = run
@@ -82,6 +92,11 @@ class UpdateManager(private val context: Context) {
                         size = a.optLong("size")
                     }
                 }
+            }
+            if (fixedUrl.isNotBlank()) {
+                // apkName 仍保留带运行号的名字，避免本地 updates 目录里的旧包被覆盖。
+                directUrl = fixedUrl
+                size = fixedSize
             }
             val version = tag.removePrefix("v")
             val info = ReleaseInfo(

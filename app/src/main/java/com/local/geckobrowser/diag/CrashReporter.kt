@@ -51,7 +51,12 @@ import java.util.Locale
  *    独立崩溃文件 + 追加式 latest.log + 三处目录，任一成功即可。
  *    启动时写一条 boot 自检记录，用户打开应用即可确认日志通道本身可用。
  *
- * 6. 目录：API 29+ 用 MediaStore.Downloads 写公共 Download/bcrash；
+ * 6. 【本次修复】必须先 checkPreviousSession 再 markStage；旧顺序下本次进程会立刻
+ *    覆盖 stage.marker，使「最后停留阶段」永远显示 crash_reporter_init。
+ *    同时校验 stage.marker 的 pid 是否属于上次进程，并用 PackageInfo.lastUpdateTime
+ *    识别「APK 覆盖安装时系统包管理器强杀旧进程」这类正常重启，不再误报为崩溃。
+ *
+ * 7. 目录：API 29+ 用 MediaStore.Downloads 写公共 Download/bcrash；
  *    API 26~28 写公共 Download/bcrash（需 WRITE_EXTERNAL_STORAGE，已在 manifest 限定 maxSdk 28）；
  *    同时无条件写外部私有 Download/bcrash 与内部 filesDir/bcrash 作为兜底。
  */
@@ -75,8 +80,12 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
     /** 在 Application.onCreate 最早调用：建立可写通道、检查上次会话、写自检记录。 */
     fun init(application: Application) {
         app = application
-        markStage("crash_reporter_init")
+        // 【修复】必须先读上次会话，再写本次阶段标记。
+        // 旧顺序下 markStage 立刻覆盖 stage.marker，checkPreviousSession 读到的
+        // 「最后停留阶段」永远是本次进程的 crash_reporter_init —— 用户日志里
+        // stage marker 的 pid 与当前 pid 相同（都是新进程）正是这个 bug 的证据。
         checkPreviousSession()
+        markStage("crash_reporter_init")
         record("boot", extra = "日志通道自检：能看到本文件说明 Download/bcrash 写入正常。")
         markState("alive")
     }
@@ -124,6 +133,7 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         runCatching {
             val dir = File(a.filesDir, DIR_NAME).apply { mkdirs() }
             val text = "state=$state\npid=${android.os.Process.myPid()}\n" +
+                "timeMs=${System.currentTimeMillis()}\n" +
                 "time=${Date()}\nbuild=${BuildConfig.VERSION_NAME}-${BuildConfig.BUILD_NUMBER}\n"
             FileOutputStream(File(dir, MARKER), false).use { out ->
                 out.write(text.toByteArray(Charsets.UTF_8))
@@ -147,7 +157,7 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
     }
 
     /** 任何位置发现异常都可调用；内部全程兜底，绝不向外抛异常。 */
-    fun record(tag: String, throwable: Throwable? = null, extra: String = "") {
+    fun record(tag: String, throwable: Throwable? = null, extra: String = "", stageOverride: String? = null) {
         val a = app ?: return
         runCatching {
             val now = Date()
@@ -157,7 +167,7 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                 append("time=").append(now).append('\n')
                 append("pid=").append(android.os.Process.myPid()).append('\n')
                 append("thread=").append(Thread.currentThread().name).append('\n')
-                append("lastStage=").append(currentStage).append('\n')
+                append("lastStage=").append(stageOverride ?: currentStage).append('\n')
                 append("version=").append(BuildConfig.VERSION_NAME)
                     .append('-').append(BuildConfig.BUILD_NUMBER).append('\n')
                 append("device=").append(Build.MANUFACTURER).append('/').append(Build.MODEL)
@@ -190,30 +200,86 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         val marker = File(File(a.filesDir, DIR_NAME), MARKER)
         if (!marker.exists()) return // 首次安装，无需补记
         val markerText = runCatching { marker.readText() }.getOrDefault("(不可读)")
-        val state = markerText.lineSequence()
-            .firstOrNull { it.startsWith("state=") }
-            ?.removePrefix("state=") ?: "unknown"
-        val oldPid = markerText.lineSequence()
-            .firstOrNull { it.startsWith("pid=") }
-            ?.removePrefix("pid=")?.trim()?.toIntOrNull() ?: 0
+        fun field(key: String): String? = markerText.lineSequence()
+            .firstOrNull { it.startsWith(key) }?.substringAfter('=')
+
+        val state = field("state=") ?: "unknown"
+        val oldPid = field("pid=")?.trim()?.toIntOrNull() ?: 0
+        val markerMs = field("timeMs=")?.trim()?.toLongOrNull() ?: 0L
         // 只有「已正常结束」不补记；其余状态说明上次进程没走完结束流程。
         if (state == "finished") return
-        val stage = runCatching {
+
+        val stageText = runCatching {
             File(a.filesDir, "$DIR_NAME/$STAGE_MARKER").readText()
         }.getOrDefault("(无阶段标记，可能是旧版本写入的存活标记)")
+        val stagePid = stageText.lineSequence()
+            .firstOrNull { it.startsWith("pid=") }?.substringAfter('=')?.trim()?.toIntOrNull() ?: 0
+        val stageValid = oldPid != 0 && stagePid == oldPid
+        val stageName = stageText.lineSequence()
+            .firstOrNull { it.startsWith("stage=") }?.substringAfter('=') ?: "unknown"
+        val stageSummary = if (stageValid) stageName else "无效（本次启动已覆盖）"
+
+        val install = readInstallInfo(markerMs)
         val exitInfo = readExitInfo(oldPid)
+        // 安装/覆盖更新期间系统包管理器会强杀旧进程，这类重启不是崩溃，单独归类。
         record(
-            tag = "previous_session_died",
+            tag = if (install.second) "install_or_update_restart" else "previous_session_died",
+            stageOverride = stageSummary,
             extra = buildString {
                 append("上次进程未正常结束，存活标记状态=").append(state)
                     .append("，上次 pid=").append(oldPid).append("。\n")
-                append("state=alive 且未走到 onStop，说明进程在前台 1 秒内终止；\n")
-                append("Java 层没有任何异常记录，基本可判定为 native 崩溃/系统信号/系统强杀。\n\n")
-                append("--- 存活标记原文 ---\n").append(markerText).append('\n')
-                append("--- 最后停留阶段 ---\n").append(stage).append('\n')
+                append("state=alive 且未走到 onStop，说明进程在前台被终止；")
+                    .append("Java 层没有任何异常记录。\n")
+                if (install.second) {
+                    append("判定：APK 安装/覆盖更新导致系统终止旧进程，属于正常重启，不是崩溃。\n")
+                } else {
+                    append("判定：非安装期终止，可能是 native 崩溃、系统信号或 ROM 后台策略强杀。\n")
+                    append("注意：这类终止不走 Java 回调，本文件是下次冷启动补写的，不含崩溃瞬间堆栈；\n")
+                    append("下方的 ApplicationExitInfo 才是系统的真实退出原因与 native trace。\n")
+                }
+                append("\n--- 存活标记原文 ---\n").append(markerText).append('\n')
+                append("--- 最后停留阶段 ---\n")
+                    .append(if (stageValid) stageText else
+                        "阶段标记 pid=$stagePid，上次进程 pid=$oldPid，不一致；本次启动已覆盖，无法反映上次终止点。")
+                    .append('\n')
+                append("--- 安装/更新时间（PackageInfo，系统 API，本地读取）---\n")
+                    .append(install.first).append('\n')
                 append("--- 系统退出原因（ApplicationExitInfo）---\n").append(exitInfo).append('\n')
             }
         )
+    }
+
+    /**
+     * 用 PackageInfo.firstInstallTime / lastUpdateTime 判断上次进程是否死于 APK 安装。
+     * 返回「说明文本」与「是否为安装期重启」。完全本地、无需任何权限。
+     */
+    @Suppress("DEPRECATION")
+    private fun readInstallInfo(markerMs: Long): Pair<String, Boolean> {
+        val a = app ?: return "(Application 未初始化)" to false
+        return runCatching {
+            val pm = a.packageManager
+            val pi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(a.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
+            } else {
+                pm.getPackageInfo(a.packageName, 0)
+            }
+            val delta = pi.lastUpdateTime - markerMs
+            // 存活标记写于安装时刻之后 10 分钟内：说明进程是在安装/覆盖更新时被杀的。
+            val recent = markerMs > 0L && delta >= 0L && delta <= 10L * 60L * 1000L
+            val text = buildString {
+                append("firstInstallTime=").append(Date(pi.firstInstallTime)).append('\n')
+                append("lastUpdateTime=").append(Date(pi.lastUpdateTime)).append('\n')
+                append("上次存活标记时间=").append(
+                    if (markerMs > 0L) Date(markerMs).toString() else "(旧版日志无 timeMs 字段)"
+                ).append('\n')
+                append("lastUpdateTime - marker = ").append(delta).append(" ms\n")
+                append("判定：").append(
+                    if (recent) "安装/覆盖更新期间被系统包管理器终止（正常重启）"
+                    else "非安装期终止"
+                ).append('\n')
+            }
+            text to recent
+        }.getOrElse { t -> "读取安装信息失败：${t.javaClass.simpleName}: ${t.message}" to false }
     }
 
     /**
@@ -230,7 +296,11 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
             // pid=0 表示取本包全部历史记录；按时间倒序。
             val list = am.getHistoricalProcessExitReasons(a.packageName, 0, 20)
             val sb = StringBuilder()
-            if (list.isEmpty()) sb.append("(系统未返回任何历史退出记录)\n")
+            if (list.isEmpty()) sb.append(
+                "(系统未返回任何历史退出记录)\n" +
+                "  可能原因：vivo/OriginOS 未实现或已清理该记录；或上次进程是被包管理器在 APK\n" +
+                "  安装/覆盖更新时终止（这类终止不产生 exit reason）。此时请优先看上面的安装/更新时间段。\n"
+            )
             list.take(8).forEach { info ->
                 val matched = info.pid == previousPid
                 sb.append("reason=").append(reasonName(info.reason))

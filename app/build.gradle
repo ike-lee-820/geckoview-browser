@@ -36,9 +36,24 @@ android {
         buildConfigField "String", "UPDATE_PROXY_BASE", "\"https://v6.gh-proxy.com/https://github.com/\""
         // versionName 绑定 GeckoView 内核版本，代码更新时不会变；用运行号判断是否有新构建。
         buildConfigField "int", "BUILD_NUMBER", "${System.getenv('GITHUB_RUN_NUMBER')?.toInteger() ?: 1}"
+        // 固定签名指纹，便于核对每次构建证书一致（应用内更新覆盖安装的前提）。
+        buildConfigField "String", "SIGNING_SHA256", "\"1D:39:FF:CB:0F:CF:84:9E:5B:FF:C1:15:65:18:CD:34:13:E0:4B:59:11:D3:0F:26:57:EF:26:86:3C:5E:6C:0B\""
     }
 
-    // 使用 AGP 自动生成的 debug 签名配置，CI 首次构建时会自动创建 debug.keystore。
+    // 【固定签名】CI 每次都是全新 runner，AGP 的 debug.keystore 会被重新随机生成。
+    // 旧配置 release 复用 signingConfigs.debug，导致每次构建证书都不同，
+    // 应用内更新下载后覆盖安装会因签名不一致失败。
+    // 优先从环境变量 / GitHub Secrets 读取（生产环境推荐），否则回退到仓库内置固定密钥。
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("RELEASE_KEYSTORE")
+            storeFile ksPath ? file(ksPath) : file("release.keystore")
+            storePassword System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: "geckobrowser-local"
+            keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: "geckobrowser"
+            keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: "geckobrowser-local"
+        }
+    }
+
     // versionName 严格等于 GECKOVIEW_VERSION，不追加任何后缀。
     buildTypes {
         debug {
@@ -47,7 +62,8 @@ android {
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.debug
+            // 所有 release 构建共用同一证书，保证应用内更新可覆盖安装。
+            signingConfig signingConfigs.release
         }
     }
 

@@ -149,8 +149,19 @@ jobs:
             SRC="app/build/outputs/apk/debug/app-debug.apk"
           fi
           cp "$SRC" "$APK_NAME"
-          ls -lh "$APK_NAME"
+          # 固定文件名副本：配合 releases/latest/download/ 得到永不变化的加速直链，
+          # 每次构建覆盖同名 asset，用户/应用内更新不必再换运行号。
+          LATEST_NAME="geckoview-browser-latest.apk"
+          cp "$SRC" "$LATEST_NAME"
+          ls -lh "$APK_NAME" "$LATEST_NAME"
+          # 签名一致性自检：每次构建的证书指纹必须完全相同，否则覆盖安装会失败。
+          # apksigner 能识别 AGP 默认的 v2/v3 签名（jarsigner 只认 v1，会误报 unsigned）。
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK_NAME" 2>&1 | grep -i 'SHA-256' | head -2 || true
+          fi
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "LATEST_NAME=$LATEST_NAME" >> "$GITHUB_OUTPUT"
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
@@ -162,7 +173,8 @@ jobs:
           if-no-files-found: error
 
       # 每次构建都会生成带运行号的新文件名；同名 tag 会不断累积旧 APK，
-      # 应用内更新可能误取旧包。发版前清空该 tag 的旧 assets，只保留本次产物。
+      # 应用内更新可能误取旧包。发版前清空该 tag 的旧 assets，只保留本次产物
+      #（固定名 geckoview-browser-latest.apk 也会先删再传，保证指向最新构建）。
       - name: Clean previous release assets
         if: github.ref == 'refs/heads/main' && success()
         env:
@@ -190,7 +202,12 @@ jobs:
             构建时间：${{ github.event.head_commit.timestamp }}
             构建号：#${{ github.run_number }}
             说明：完全本地化浏览器，无云端同步；APK 使用 arm64-v8a GeckoView Beta 内核。
-          files: ${{ steps.artifact.outputs.APK_NAME }}
+            固定签名 SHA-256：1D:39:FF:CB:0F:CF:84:9E:5B:FF:C1:15:65:18:CD:34:13:E0:4B:59:11:D3:0F:26:57:EF:26:86:3C:5E:6C:0B
+            固定下载：releases/latest/download/geckoview-browser-latest.apk
+          # 同时发布带运行号的归档包与固定名包；固定名包每次被覆盖，链接永远不变。
+          files: |
+            ${{ steps.artifact.outputs.APK_NAME }}
+            ${{ steps.artifact.outputs.LATEST_NAME }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
