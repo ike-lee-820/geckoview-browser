@@ -6,7 +6,10 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.local.geckobrowser.browser.ThemeMode
 import com.local.geckobrowser.browser.ToolbarPosition
@@ -116,6 +119,26 @@ class PreferencesDataStore(private val context: Context) {
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit { block(it) }
         _cached.value = read()
+    }
+
+    /** 备份：导出全部偏好键（键名 -> 原始值），供 BackupManager 写入 JSON。 */
+    suspend fun exportAll(): Map<String, Any?> =
+        context.dataStore.data.first().asMap().entries.associate { it.key.name to it.value }
+
+    /** 恢复：按值的类型重建 Preferences.Key 并写回，随后刷新内存缓存。 */
+    suspend fun importAll(values: Map<String, Any?>) = edit { p ->
+        values.forEach { (name, value) ->
+            when (value) {
+                null -> Unit
+                is Boolean -> p[booleanPreferencesKey(name)] = value
+                is Int -> p[intPreferencesKey(name)] = value
+                is Long -> p[longPreferencesKey(name)] = value
+                is Float -> p[floatPreferencesKey(name)] = value
+                is Double -> p[floatPreferencesKey(name)] = value.toFloat()
+                is Set<*> -> p[stringSetPreferencesKey(name)] = value.map { it.toString() }.toSet()
+                else -> p[stringPreferencesKey(name)] = value.toString()
+            }
+        }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) = edit { it[Keys.THEME] = mode.name }

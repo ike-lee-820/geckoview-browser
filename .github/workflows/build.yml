@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write   # 创建/更新 Release 与上传 assets，使用内置 GITHUB_TOKEN，无需在仓库中存放任何 PAT。
-  actions: read     # 签名连续性诊断：读取上一版构建产物，核对证书是否一致。
 
 jobs:
   build:
@@ -132,12 +131,40 @@ jobs:
 
       - name: Build (main -> release, develop -> debug)
         run: |
-          set -euo pipefail
+          set -o pipefail
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            ./gradlew assembleRelease --stacktrace --no-daemon
+            ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build.log
           else
-            ./gradlew assembleDebug --stacktrace --no-daemon
+            ./gradlew assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
           fi
+
+      # 常驻诊断：任何构建失败都把 Kotlin/Gradle 错误行回写为 commit comment，
+      # 避免每次失败都临时改工作流。成功时整步跳过。
+      - name: Report build failure details
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request, pathlib
+          p = pathlib.Path("build.log")
+          text = p.read_text(encoding="utf-8", errors="replace") if p.exists() else "no build.log"
+          lines = [l for l in text.splitlines() if re.search(
+              r"(?i)(^e: |^w: |error:|FAILURE:|What went wrong|Caused by:|Execution failed|> Task .*FAILED|BUILD FAILED|Unresolved reference|None of the following)", l)]
+          body = "\n".join(lines[-120:])[-55000:] or text[-8000:]
+          data = json.dumps({"body": "```\n" + body + "\n```"}).encode("utf-8")
+          req = urllib.request.Request(
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments",
+              data=data, method="POST",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Content-Type": "application/json",
+                       "Accept": "application/vnd.github+json",
+                       "User-Agent": "ci-build-diag"})
+          try:
+              print("comment status", urllib.request.urlopen(req, timeout=30).status)
+          except Exception as e:
+              print("comment failed", type(e).__name__, str(e)[:200])
+          PY
 
       - name: Rename APK
         id: artifact
@@ -180,55 +207,20 @@ jobs:
       # 旧版一度复用 AGP 的 debug 签名，而 CI 每次是全新 runner；本步骤下载上一版 artifact
       # 打印其证书，并报告 runner 是否预置了固定的 ~/.android/debug.keystore，
       # 结果回写为 commit comment，便于确认是否可以直接覆盖安装而不丢数据。
-      - name: Verify signing continuity (diagnostic)
+      # 证书自检：把本次 APK 的签名指纹写入 Job Summary，便于长期核对固定签名未被改动。
+      # 旧版曾复用 AGP 的 debug 签名（CI 每次全新 runner、无预置 debug.keystore，证书随机），
+      # 现已改为仓库内固定证书；此处不再下载历史 100MB artifact，避免拖慢构建与 artifact 过期失败。
+      - name: Verify signing certificate
         if: github.ref == 'refs/heads/main' && success()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          REPORT=""
-          add() { REPORT="$REPORT"$'\n'"$1"; }
-          add "=== 本次 APK 签名 ==="
-          add "$("$APKSIGNER" verify --print-certs "$APK_NAME" 2>&1 | grep -iE 'SHA-256|Signer #' | head -8)"
-          add "=== 上一版（run22, debug 签名时代）APK 签名 ==="
-          mkdir -p /tmp/prevapk
-          gh run download 42346116379 \
-            -n geckoview-browser-160.0.20261104021706-22 \
-            -D /tmp/prevapk --repo "${{ github.repository }}" 2>&1 | tail -3
-          PREV=$(find /tmp/prevapk -name '*.apk' -type f | head -1)
-          if [ -n "$PREV" ]; then
-            add "prev apk found: $(basename "$PREV")"
-            add "$("$APKSIGNER" verify --print-certs "$PREV" 2>&1 | grep -iE 'SHA-256|Signer #' | head -8)"
-          else
-            add "上一版 artifact 下载失败（可能已过期）"
-          fi
-          add "=== runner 预置 debug.keystore ==="
-          if [ -f "$HOME/.android/debug.keystore" ]; then
-            add "$("$JAVA_HOME/bin/keytool" -list -v -keystore "$HOME/.android/debug.keystore" \
-              -storepass android 2>&1 | grep -iE 'Alias name|Owner:|SHA256:' | head -8)"
-          else
-            add "runner 无预置 debug.keystore（说明每次构建随机生成，旧版之间证书也不同）"
-          fi
-          echo "$REPORT"
-          export REPORT
-          python3 - <<'PY'
-          import os, json, urllib.request
-          body = "```\n" + os.environ.get("REPORT", "(empty)")[:50000] + "\n```"
-          data = json.dumps({"body": body}).encode("utf-8")
-          req = urllib.request.Request(
-              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments",
-              data=data, method="POST",
-              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                       "Content-Type": "application/json",
-                       "Accept": "application/vnd.github+json",
-                       "User-Agent": "ci-signing-diag"})
-          try:
-              print("comment status", urllib.request.urlopen(req, timeout=30).status)
-          except Exception as e:
-              print("comment failed", type(e).__name__, str(e)[:200])
-          PY
+          {
+            echo "## 本次 APK 签名证书"
+            echo '```'
+            "$APKSIGNER" verify --print-certs "$APK_NAME" 2>&1 | grep -iE 'SHA-256|certificate DN' || true
+            echo "期望值：1D:39:FF:CB:0F:CF:84:9E:5B:FF:C1:15:65:18:CD:34:13:E0:4B:59:11:D3:0F:26:57:EF:26:86:3C:5E:6C:0B"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean previous release assets
         if: github.ref == 'refs/heads/main' && success()

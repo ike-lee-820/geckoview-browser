@@ -28,6 +28,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,6 +44,7 @@ import com.local.geckobrowser.browser.BrowserViewModel
 import com.local.geckobrowser.browser.ThemeMode
 import com.local.geckobrowser.browser.ToolbarPosition
 import com.local.geckobrowser.browser.TrackingPolicy
+import com.local.geckobrowser.data.BackupManager
 import com.local.geckobrowser.data.BrowserPrefs
 import com.local.geckobrowser.update.UpdateState
 
@@ -53,6 +56,42 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
     val update by vm.update.collectAsState()
     var exceptionDialog by remember { mutableStateOf(false) }
     var exceptionHost by remember { mutableStateOf("") }
+
+    // 本地备份与恢复：全部通过 SAF 读写用户选择的文件，无任何网络行为。
+    val context = LocalContext.current
+    val backupScope = rememberCoroutineScope()
+    var backupMessage by remember { mutableStateOf<String?>(null) }
+    var exportDialog by remember { mutableStateOf(false) }
+    var importPassDialog by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var exportPass by remember { mutableStateOf("") }
+    var importPass by remember { mutableStateOf("") }
+
+    val createBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) backupScope.launch {
+            backupMessage = runCatching {
+                BackupManager.exportTo(
+                    context, uri,
+                    exportPass.takeIf { it.isNotEmpty() }?.toCharArray()
+                )
+            }.getOrElse { t -> "导出失败：${t.message}" }
+            exportPass = ""
+        }
+    }
+    val openBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        pendingImportUri = uri
+        if (BackupManager.needsPassphrase(context, uri)) {
+            importPassDialog = true
+        } else backupScope.launch {
+            backupMessage = runCatching { BackupManager.importFrom(context, uri, null) }
+                .getOrElse { t -> "恢复失败：${t.message}" }
+        }
+    }
 
     Scaffold(topBar = {
         Text("设置", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
@@ -146,6 +185,10 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                             is UpdateState.Ready -> Text("更新包已就绪：${s.version}")
                             is UpdateState.Error -> Text(s.message, color = MaterialTheme.colorScheme.error)
                             is UpdateState.UpToDate -> Text("已是最新版本 ${s.current}")
+                            is UpdateState.NeedsReinstall -> Text(
+                                s.message, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
                             else -> Unit
                         }
                         Row {
@@ -153,11 +196,35 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                             TextButton(onClick = { vm.downloadUpdate() }) { Text("下载并安装") }
                             if (update is UpdateState.Ready) {
                                 TextButton(onClick = {
-                                    (vm.manager.context.applicationContext as com.local.geckobrowser.GeckoBrowserApp)
-                                        .updateManager.install((update as UpdateState.Ready).apkPath)
+                                    vm.installUpdate((update as UpdateState.Ready).apkPath)
                                 }) { Text("立即安装") }
                             }
                         }
+                    }
+                }
+            }
+
+            item { SectionTitle("备份与恢复") }
+            item {
+                Card(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("导出到本机文件（书签、历史、标签组、站点设置、偏好全部本地保存，不上传）。"
+                            + "已保存的密码需要设置一个口令才能随备份迁移；卸载重装后口令需保持一致。",
+                            style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.padding(top = 8.dp)) {
+                            Button(onClick = { exportDialog = true }) { Text("导出备份") }
+                            TextButton(onClick = { openBackup.launch(arrayOf("application/json", "text/plain", "*/*")) }) {
+                                Text("恢复备份")
+                            }
+                        }
+                        backupMessage?.let { msg ->
+                            Text(msg, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 8.dp))
+                        }
+                        Text("固定签名后每次更新都可直接覆盖安装；首次从旧版迁移需卸载重装一次，请先导出备份。",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 8.dp))
                     }
                 }
             }
@@ -231,6 +298,68 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
             }
         }
+    }
+
+    if (exportDialog) {
+        AlertDialog(
+            onDismissRequest = { exportDialog = false },
+            title = { Text("导出本地备份") },
+            text = {
+                Column {
+                    Text("设置一个口令，用于加密备份中的已保存密码；留空则跳过密码，只导出其余数据。",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = exportPass, onValueChange = { exportPass = it },
+                        label = { Text("备份口令（可留空）") },
+                        singleLine = true,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    exportDialog = false
+                    createBackup.launch(BackupManager.defaultFileName())
+                }) { Text("选择保存位置") }
+            },
+            dismissButton = { TextButton(onClick = { exportDialog = false }) { Text("取消") } }
+        )
+    }
+
+    if (importPassDialog) {
+        AlertDialog(
+            onDismissRequest = { importPassDialog = false },
+            title = { Text("备份包含已保存的密码") },
+            text = {
+                Column {
+                    Text("输入导出时设置的口令以恢复密码；留空则跳过密码，其余数据照常恢复。",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = importPass, onValueChange = { importPass = it },
+                        label = { Text("备份口令") },
+                        singleLine = true,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    importPassDialog = false
+                    val uri = pendingImportUri
+                    if (uri != null) backupScope.launch {
+                        backupMessage = runCatching {
+                            BackupManager.importFrom(
+                                context, uri,
+                                importPass.takeIf { it.isNotEmpty() }?.toCharArray()
+                            )
+                        }.getOrElse { t -> "恢复失败：${t.message}" }
+                        importPass = ""
+                        pendingImportUri = null
+                    }
+                }) { Text("恢复") }
+            },
+            dismissButton = { TextButton(onClick = { importPassDialog = false; importPass = "" }) { Text("取消") } }
+        )
     }
 
     if (exceptionDialog) {

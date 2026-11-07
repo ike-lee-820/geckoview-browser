@@ -316,6 +316,22 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 点「安装」：签名校验失败时给出明确的迁移引导，而不是让系统弹「应用未安装」。 */
+    fun installUpdate(apkPath: String) {
+        viewModelScope.launch {
+            val error = runCatching { updates.install(apkPath) }.getOrElse { t -> t.message }
+            _update.value = when {
+                error == null -> UpdateState.Ready(
+                    (update.value as? UpdateState.Ready)?.version
+                        ?: com.local.geckobrowser.BuildConfig.VERSION_NAME,
+                    apkPath
+                )
+                error.startsWith("签名不一致") -> UpdateState.NeedsReinstall(error)
+                else -> UpdateState.Error(error)
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- 扩展
     /** 本地侧载：assets 内置扩展通过 ensureBuiltIn 加载，不依赖 AMO。 */
     private suspend fun loadBuiltInExtensions() = withContext(Dispatchers.IO) {

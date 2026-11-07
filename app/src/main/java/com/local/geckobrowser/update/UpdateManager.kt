@@ -2,7 +2,10 @@ package com.local.geckobrowser.update
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
+import android.os.Build
 import androidx.core.content.FileProvider
 import com.local.geckobrowser.BuildConfig
 import com.local.geckobrowser.GeckoBrowserApp
@@ -16,6 +19,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /** Release 元信息，仅来自公开 GitHub Release API。 */
 data class ReleaseInfo(
@@ -37,6 +41,8 @@ sealed interface UpdateState {
     data class Downloading(val progress: Int, val received: Long, val total: Long) : UpdateState
     data class Ready(val version: String, val apkPath: String) : UpdateState
     data class Error(val message: String) : UpdateState
+    /** 待安装 APK 与当前应用签名不同：Android 不允许覆盖安装，需先备份再卸载重装。 */
+    data class NeedsReinstall(val message: String) : UpdateState
 }
 
 /**
@@ -181,10 +187,28 @@ class UpdateManager(private val context: Context) {
         else emit(UpdateState.Error("下载失败：代理与直连均不可用"))
     }.flowOn(Dispatchers.IO)
 
-    /** 通过 FileProvider 触发系统安装界面；不静默安装、不请求任何云端授权。 */
-    fun install(apkPath: String) {
+    /**
+     * 通过 FileProvider 触发系统安装界面；不静默安装、不请求任何云端授权。
+     *
+     * 【本次修复】安装前先比对 APK 与当前应用的签名证书。旧版使用每次随机生成的 debug
+     * 证书，新版换成固定签名后直接调用 ACTION_VIEW 只会得到含糊的「应用未安装」，
+     * 用户完全不知道发生了什么。这里改为返回明确说明，由 UI 引导先备份、再卸载重装。
+     *
+     * @return null 表示已成功拉起系统安装界面；否则为给用户看的错误说明。
+     */
+    fun install(apkPath: String): String? {
         val file = File(apkPath)
-        if (!file.exists()) return
+        if (!file.exists()) return "更新包不存在，请重新下载。"
+        val pm = context.packageManager
+        val incoming = archiveSignatures(pm, apkPath)
+        val current = currentSignatures(pm)
+        if (incoming.isEmpty()) return "无法读取更新包的签名证书，请重新下载。"
+        if (current.isNotEmpty() && current != incoming) {
+            return "签名不一致：设备上安装的是旧版（每次随机的 debug 签名），" +
+                "更新包使用了新的固定签名。Android 不允许跨签名覆盖安装。
+" +
+                "请先到「设置 → 备份与恢复」导出数据，卸载旧版后安装新包，再导入备份恢复。"
+        }
         val uri: Uri = FileProvider.getUriForFile(
             context, "${context.packageName}.fileprovider", file
         )
@@ -193,8 +217,33 @@ class UpdateManager(private val context: Context) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        runCatching { context.startActivity(intent) }
+        return if (runCatching { context.startActivity(intent) }.isSuccess) null
+        else "无法拉起系统安装界面，请到 Download 目录手动安装 APK。"
     }
+
+    @Suppress("DEPRECATION")
+    private fun archiveSignatures(pm: PackageManager, path: String): Set<String> {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val pi = pm.getPackageArchiveInfo(path, flags) ?: return emptySet()
+        val certs: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            pi.signingInfo?.apkContentsSigners else pi.signatures
+        return certs?.map { it.sha256Hex() }?.toSet() ?: emptySet()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentSignatures(pm: PackageManager): Set<String> {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val pi = pm.getPackageInfo(context.packageName, flags)
+        val certs: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            pi.signingInfo?.apkContentsSigners else pi.signatures
+        return certs?.map { it.sha256Hex() }?.toSet() ?: emptySet()
+    }
+
+    private fun Signature.sha256Hex(): String =
+        MessageDigest.getInstance("SHA-256").digest(toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun get(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection

@@ -49,3 +49,12 @@ https://v6.gh-proxy.com/https://github.com/ike-lee-820/geckoview-browser/release
 - **固定签名**：所有 release APK 使用同一证书（SHA-256 `1D:39:FF:CB:0F:CF:84:9E:5B:FF:C1:15:65:18:CD:34:13:E0:4B:59:11:D3:0F:26:57:EF:26:86:3C:5E:6C:0B`），保证应用内更新可以直接覆盖安装。此前 release 复用 AGP 的 `debug` 签名，而 CI 每次全新 runner 会重新随机生成 `debug.keystore`，导致每次证书不同、更新必失败。
 - 密钥文件 `app/release.keystore` 随仓库提供；生产环境建议改用 GitHub Secrets：`RELEASE_KEYSTORE`（文件路径）、`RELEASE_KEYSTORE_PASSWORD`、`RELEASE_KEY_ALIAS`、`RELEASE_KEY_PASSWORD`，`app/build.gradle` 会优先读取环境变量。注意仓库内的私钥是公开的，不要用于需要防篡改的分发场景。
 - **一次性迁移**：从旧版（debug 签名）升级到本版时签名已改变，Android 不允许覆盖安装，需先卸载旧版再安装一次；此后每次更新都能直接覆盖，本地数据也会因卸载而清空。
+
+## 一次性迁移与备份（重要）
+
+CI 诊断已确认：早期版本复用 AGP 自动生成的 debug 签名，而 GitHub runner **没有预置** `~/.android/debug.keystore`，每次构建都会随机生成新证书；旧版 APK 的证书 DN 是 `C=US, O=Android, CN=Android Debug`。私钥随 runner 销毁、无法复现，因此**从旧版升级到固定签名版必须卸载重装一次**，这是 Android 的签名校验限制，应用内无法绕过。
+
+- 卸载前：打开旧版没有备份入口（备份功能是新版才加入的）。若旧版数据非常重要，请先记录书签/密码；否则直接从下面的固定链接安装新版即可。
+- 安装后：以后每次更新都能直接覆盖安装，不会再丢数据。
+- **设置 → 备份与恢复**：导出为本地 JSON（SAF 选择保存位置），覆盖 Room 全部表与全部偏好；已保存的密码用导出时设置的口令（PBKDF2 + AES/GCM）重新加密，导入时用同一口令解密并写入新设备的 Android Keystore。不提供任何云端导出/同步。
+- 应用内更新在点击安装前会比对 APK 与当前应用的签名证书；不一致时不再弹出含糊的「应用未安装」，而是明确提示先备份、卸载、重装、恢复。
