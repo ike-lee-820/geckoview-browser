@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   build:
+    # 规格要求 ubuntu-latest。注意：ubuntu-latest 于 2026-10-19 ~ 11-19 逐步迁移到 Ubuntu 26.04，
+    # 镜像变更可能带来 SDK 路径/预装工具差异；若排查镜像问题，可临时改为 ubuntu-24.04 对比验证。
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,8 +26,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 修复点（本次构建失败根因）：
+      # android-actions/setup-android@v3 的 action.yml 中 packages 默认值为 "tools platform-tools"，
+      # main.ts 会逐个执行 sdkmanager <pkg>；旧 "tools" 包已从 Google SDK 仓库撤下，
+      # sdkmanager 输出 "Failed to find package 'tools'" 并以非零码退出，导致本步骤失败、后续全部 skipped。
+      # v4 声明 runs.using: node24，且默认 packages 仅为 "platform-tools"，不再安装已撤下的 tools。
+      # 此处再显式声明一次 packages，避免上游默认值将来再次变化。
+      # 附带说明：checkout@v4 / setup-java@v4 / upload-artifact@v4 仍声明 node20，
+      # 目前被 runner 强制运行在 node24 上，只是 warning，不阻塞构建；建议后续统一升级主版本。
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       # ubuntu-latest 默认自带 xmllint；若 runner 镜像更换，需补充 apt-get install libxml2-utils。
       - name: Ensure xmllint
@@ -40,7 +52,9 @@ jobs:
         run: |
           set -euo pipefail
           METADATA_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/maven-metadata.xml"
-          curl -sSfL "$METADATA_URL" -o maven-metadata.xml
+          # --retry 用于抵御网络抖动与临时 5xx；不使用 Gradle "+" 动态版本，否则无法反向填充 versionName。
+          curl -sSfL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 60 \
+            "$METADATA_URL" -o maven-metadata.xml
           LATEST=$(xmllint --xpath 'string(metadata/versioning/latest)' maven-metadata.xml || true)
           # 备选解析（xmllint 不可用时）：LATEST=$(awk -F'[<>]' '/<latest>/{print $3}' maven-metadata.xml)
           if [ -z "$LATEST" ]; then
@@ -52,9 +66,13 @@ jobs:
           fi
 
           # maven-metadata.xml 的 <latest> 可能滞后于实际可下载构建。
-          # 探测对应 AAR 是否存在；404 时回退到 <release> 字段，仍失败则报错提示人工检查。
+          # 探测对应 AAR 是否存在；404/不可下载时回退到 <release> 字段，仍失败则报错提示人工检查。
+          probe_aar() {
+            curl -sSfL --retry 2 --retry-delay 2 --connect-timeout 20 --max-time 60 \
+              --range 0-0 -o /dev/null "$1"
+          }
           AAR_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/${LATEST}/geckoview-beta-arm64-v8a-${LATEST}.aar"
-          if ! curl -sSfL --max-time 60 --range 0-0 -o /dev/null "$AAR_URL"; then
+          if ! probe_aar "$AAR_URL"; then
             echo "<latest> ${LATEST} 不可下载，尝试 <release> 回退" >&2
             RELEASE=$(xmllint --xpath 'string(metadata/versioning/release)' maven-metadata.xml || true)
             if [ -z "$RELEASE" ]; then
@@ -65,7 +83,7 @@ jobs:
               exit 1
             fi
             AAR_URL="https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-beta-arm64-v8a/${RELEASE}/geckoview-beta-arm64-v8a-${RELEASE}.aar"
-            if ! curl -sSfL --max-time 60 --range 0-0 -o /dev/null "$AAR_URL"; then
+            if ! probe_aar "$AAR_URL"; then
               echo "<release> ${RELEASE} 同样不可下载，请人工检查" >&2
               exit 1
             fi
@@ -85,33 +103,28 @@ jobs:
           SKIP_DUP=false
           if [ "$SKIP_DUP" = "true" ] && [ "${{ github.ref }}" = "refs/heads/main" ] \
              && ! echo "${{ github.event.head_commit.message }}" | grep -q '\[force-build\]'; then
-            echo "去重开关已启用时会在此处检查 tag/ assets；当前默认关闭，继续构建。"
+            echo "去重开关已启用时会在此处检查 tag/assets；当前默认关闭，继续构建。"
           fi
           echo "SKIP_DUP=$SKIP_DUP" >> "$GITHUB_ENV"
 
+      # 原工作流存在三个同名且内容完全相同的步骤，属于复制粘贴冗余，已合并为一个。
+      # set -euo pipefail 保证 sdkmanager 安装失败时立即失败，不再静默继续。
       - name: Install Android SDK components
         run: |
+          set -euo pipefail
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
-
-      - name: Install Android SDK components
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
-
-      - name: Install Android SDK components
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
       - name: Grant gradlew executable permission
         run: chmod +x ./gradlew
 
       - name: Bootstrap Gradle wrapper jar
         # 仓库不二进制提交 wrapper jar，避免体积与供应链问题。
+        # gradle-wrapper.properties 指向 gradle-8.11.1-bin.zip，与根 build.gradle 的 AGP 8.11.1 匹配。
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            curl -sSfL -o gradle/wrapper/gradle-wrapper.jar \
+            curl -sSfL --retry 3 --connect-timeout 20 --max-time 60 \
+              -o gradle/wrapper/gradle-wrapper.jar \
               "https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar"
           fi
 
