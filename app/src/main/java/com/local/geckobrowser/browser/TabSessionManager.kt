@@ -330,7 +330,7 @@ class TabSessionManager(
                     }
                     CrashReporter.markStage("restore_main_done")
                 }.onFailure { t ->
-                    CrashReporter.record("restore_from_disk", t, extra = "阶段=$currentStageForLog()")
+                    CrashReporter.record("restore_from_disk", t, extra = "阶段=${currentStageForLog()}")
                 }
                 runCatching { onRestored?.invoke() }
                     .onFailure { t -> CrashReporter.record("restore_callback", t) }

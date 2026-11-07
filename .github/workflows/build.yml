@@ -131,32 +131,12 @@ jobs:
 
       - name: Build (main -> release, develop -> debug)
         run: |
-          set -o pipefail
+          set -euo pipefail
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build.log
+            ./gradlew assembleRelease --stacktrace --no-daemon
           else
-            ./gradlew assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
+            ./gradlew assembleDebug --stacktrace --no-daemon
           fi
-
-      - name: Report compile errors (temporary)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request, pathlib, re
-          text = pathlib.Path("build.log").read_text(encoding="utf-8", errors="replace") if pathlib.Path("build.log").exists() else "no build.log"
-          lines = [l for l in text.splitlines() if re.search(r"(?i)(^e: |^w: |error:|FAILURE:|What went wrong|Caused by:|Execution failed|> Task .*FAILED|BUILD FAILED|Unresolved reference|None of the following)", l)]
-          body = "\n".join(lines[-120:])[-55000:] or text[-8000:]
-          data = json.dumps({"body": "```\n" + body + "\n```"}).encode("utf-8")
-          url = "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments"
-          req = urllib.request.Request(url, data=data, method="POST", headers={
-              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-              "Content-Type": "application/json",
-              "Accept": "application/vnd.github+json",
-              "User-Agent": "ci-diag"})
-          print(urllib.request.urlopen(req, timeout=30).status)
-          PY
 
       - name: Rename APK
         id: artifact
