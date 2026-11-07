@@ -189,8 +189,7 @@ jobs:
           set +e
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           REPORT=""
-          add() { REPORT="$REPORT
-$1"; }
+          add() { REPORT="$REPORT"$'\n'"$1"; }
           add "=== 本次 APK 签名 ==="
           add "$("$APKSIGNER" verify --print-certs "$APK_NAME" 2>&1 | grep -iE 'SHA-256|Signer #' | head -8)"
           add "=== 上一版（run22, debug 签名时代）APK 签名 ==="
