@@ -111,10 +111,10 @@ jobs:
       # set -euo pipefail 保证 sdkmanager 安装失败时立即失败，不再静默继续。
       - name: Install Android SDK components
         run: |
-          set -o pipefail
+          set -euo pipefail
           yes | sdkmanager --licenses > /dev/null || true
           # compileSdk 37 需要 android-37 platform；targetSdk 仍为 36，保留 android-36 便于对比。
-          sdkmanager "platforms;android-37.0" "platforms;android-36" "build-tools;36.0.0" "platform-tools" 2>&1 | tee sdk.log
+          sdkmanager "platforms;android-37.0" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
       - name: Grant gradlew executable permission
         run: chmod +x ./gradlew
