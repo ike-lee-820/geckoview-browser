@@ -17,77 +17,121 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 本地崩溃日志，目录固定为 Download/bcrash。
+ * 本地诊断日志，目录固定为 Download/bcrash。
  *
  * 只写设备本地，不联网、不上传、不引入任何崩溃上报 SDK。
  *
- * 可靠性设计（针对「上次崩溃没写下日志」与「补记里没有原因」）：
+ * 采集通道：
+ * - Java 层未捕获异常：Thread.UncaughtExceptionHandler（GeckoRuntime 初始化之后安装，避免被覆盖）
+ * - Gecko 内容进程崩溃 / 被回收：ContentDelegate.onCrash / onKill
+ * - ViewModel 的 EngineEvent.Crash 与启动期被 try/catch 兜住的异常
+ * - 进程存活标记：系统信号 / ROM 强杀不会走 Java 回调，下次冷启动补写现场
  *
- * 1. 安装时机：JavaDoc 中 org.mozilla.geckoview.CrashHandler 实现了
- *    Thread.UncaughtExceptionHandler，并在 GeckoRuntime 初始化时注册到全局。
- *    旧实现把自定义 handler 装在 GeckoEngine.runtime() 之前，会被直接覆盖，因此完全不生效。
- *    本实现改为 Gecko 初始化之后安装，并在 Activity.onResume 用 ensureInstalled() 复检。
- *    注意：不链式调用 GeckoView 的 CrashHandler —— 该类的 reportException() 会向 Socorro
- *    上报，与「无云端」约束冲突；本项目用本地日志与存活标记替代。
+ * 【本次修复：针对「一次运行出来多个 crash」】
  *
- * 2. 采集通道（互不依赖，任一通道失败不影响其它通道）：
- *    - Java 层未捕获异常：Thread.UncaughtExceptionHandler
- *    - Gecko 内容进程崩溃 / 被回收：ContentDelegate.onCrash / onKill
- *    - ViewModel 的 EngineEvent.Crash 与启动期被 try/catch 兜住的异常
- *    - 进程存活标记：native SIGSEGV / OOM / 系统强杀不会走任何 Java 回调，
- *      下次冷启动通过未清除的 alive.marker 反推出「上次进程异常终止」并补写记录。
+ * 用户日志里 ApplicationExitInfo 明确给出
+ * `reason=USER_REQUESTED(10)` + `[FORCE STOP] stop ... due to single-cleaner`，
+ * 这是 vivo/OriginOS 一键清理强杀应用，**不是崩溃**。旧实现一律写成
+ * previous_session_died 并猜测「native 崩溃」，造成一屏误导性文件。
  *
- * 3. 【本次新增】阶段标记 stage.marker：每个关键节点同步覆盖写入，
- *    previous_session_died 日志会附上「最后停留的阶段」，直接定位死在哪一行。
+ * 1. 按系统退出原因准确分类：force_stopped_by_system / user_stopped_app /
+ *    install_or_update_restart / previous_session_died / previous_session_died_unknown。
+ *    系统清理与用户主动结束不再带「崩溃」字样。
+ * 2. 单一会话标记 session.marker：state / pid / timeMs / stage / build 同一次写入，
+ *    彻底消除旧版 alive.marker 与 stage.marker 两份文件 pid 对不上的问题；
+ *    写临时文件后原子 rename，并加同步锁，避免多进程并发写撕裂。
+ * 3. 只在主进程写会话标记：GeckoView 内容进程等不跑 Application.onCreate 的进程
+ *    不参与，避免它们覆盖主进程的标记。
+ * 4. 补记去重：last_reported.marker 记录「上次进程 pid+timeMs」，
+ *    同一进程死亡无论被多少次冷启动读到，只补记一次。
+ * 5. ApplicationExitInfo 没有匹配上次 pid 的记录时明确说明，
+ *    其余历史条目标注「不含上次进程」，不再把无关旧记录当成原因展示。
  *
- * 4. 【本次新增】ApplicationExitInfo（Android 11 / API 30+ 系统 API，非 GeckoView API）：
- *    通过 ActivityManager.getHistoricalProcessExitReasons 读取上次进程的退出原因
- *    （REASON_CRASH_NATIVE / SIGNALED / LOW_MEMORY / ANR 等）、信号号、系统描述与
- *    native tombstone 摘要（getTraceInputStream）。这补齐了「补记没有堆栈」的缺口，
- *    且完全本地、无需任何权限。用户设备 sdk=34，可直接使用。
- *
- * 5. 写入可靠性：全程同步、不开协程、不碰 Room 与 Gecko；
- *    FileOutputStream.flush() + FileDescriptor.sync() 强制落盘；
- *    独立崩溃文件 + 追加式 latest.log + 三处目录，任一成功即可。
- *    启动时写一条 boot 自检记录，用户打开应用即可确认日志通道本身可用。
- *
- * 6. 【本次修复】必须先 checkPreviousSession 再 markStage；旧顺序下本次进程会立刻
- *    覆盖 stage.marker，使「最后停留阶段」永远显示 crash_reporter_init。
- *    同时校验 stage.marker 的 pid 是否属于上次进程，并用 PackageInfo.lastUpdateTime
- *    识别「APK 覆盖安装时系统包管理器强杀旧进程」这类正常重启，不再误报为崩溃。
- *
- * 7. 目录：API 29+ 用 MediaStore.Downloads 写公共 Download/bcrash；
- *    API 26~28 写公共 Download/bcrash（需 WRITE_EXTERNAL_STORAGE，已在 manifest 限定 maxSdk 28）；
- *    同时无条件写外部私有 Download/bcrash 与内部 filesDir/bcrash 作为兜底。
+ * 目录：API 29+ 用 MediaStore.Downloads 写公共 Download/bcrash；
+ * API 26~28 写公共 Download/bcrash（WRITE_EXTERNAL_STORAGE 限定 maxSdk 28）；
+ * 同时无条件写外部私有 Download/bcrash 与内部 filesDir/bcrash 兜底。
  */
 object CrashReporter : Thread.UncaughtExceptionHandler {
 
     private const val DIR_NAME = "bcrash"
-    private const val MARKER = "alive.marker"
-    private const val STAGE_MARKER = "stage.marker"
+    private const val SESSION_MARKER = "session.marker"
+    private const val REPORTED_MARKER = "last_reported.marker"
     private const val LATEST = "latest.log"
+
+    /** 兼容旧版：读取时若新标记不存在，仍尝试旧的两个文件。 */
+    private const val OLD_ALIVE = "alive.marker"
+    private const val OLD_STAGE = "stage.marker"
 
     @Volatile private var app: Application? = null
 
     /** 仅用于诊断记录，不主动调用，避免触发 GeckoView CrashHandler 的 Socorro 上报。 */
     @Volatile private var replacedHandler: Thread.UncaughtExceptionHandler? = null
 
-    /** 当前阶段（内存副本），每条日志都会带上。 */
     @Volatile private var currentStage: String = "app_start"
+
+    /** 会话标记的整体读写锁；多进程各持有自己的锁，文件级用 tmp+rename 保证原子。 */
+    private val markerLock = Any()
 
     private val stampFormat = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US)
 
-    /** 在 Application.onCreate 最早调用：建立可写通道、检查上次会话、写自检记录。 */
+    private data class SessionMark(
+        val state: String,
+        val pid: Int,
+        val timeMs: Long,
+        val stage: String,
+        val build: String
+    )
+
+    private data class ExitSummary(
+        val text: String,
+        val matched: Boolean,
+        val forceStopped: Boolean,
+        val userStopped: Boolean
+    )
+
+    private data class Reported(
+        val signature: String,
+        val tag: String,
+        val timeMs: Long
+    )
+
+    private fun readReported(file: File): Reported {
+        val text = runCatching { file.readText() }.getOrDefault("")
+        // 兼容 build 22~28：旧文件只存一行 signature。
+        if (text.isBlank()) return Reported("", "", 0L)
+        fun f(k: String) = text.lineSequence()
+            .firstOrNull { it.startsWith(k) }?.substringAfter('=')
+        val sig = f("signature=") ?: text.trim()
+        return Reported(
+            signature = sig,
+            tag = f("tag=") ?: "",
+            timeMs = f("timeMs=")?.trim()?.toLongOrNull() ?: 0L
+        )
+    }
+
+    private fun writeReported(file: File, signature: String, tag: String, now: Long) {
+        runCatching {
+            val dir = file.parentFile ?: return
+            if (!dir.exists()) dir.mkdirs()
+            val text = "signature=$signature\ntag=$tag\ntimeMs=$now\n"
+            val tmp = File(dir, "$REPORTED_MARKER.tmp")
+            FileOutputStream(tmp, false).use { out ->
+                out.write(text.toByteArray(Charsets.UTF_8))
+                out.flush()
+                out.fd.sync()
+            }
+            if (!tmp.renameTo(file)) file.writeText(text)
+        }
+    }
+
+    /** 在 Application.onCreate 最早调用。非主进程只保留日志能力，不碰会话标记。 */
     fun init(application: Application) {
         app = application
-        // 【修复】必须先读上次会话，再写本次阶段标记。
-        // 旧顺序下 markStage 立刻覆盖 stage.marker，checkPreviousSession 读到的
-        // 「最后停留阶段」永远是本次进程的 crash_reporter_init —— 用户日志里
-        // stage marker 的 pid 与当前 pid 相同（都是新进程）正是这个 bug 的证据。
+        if (!isMainProcess(application)) return
+        // 【关键顺序】先读上次会话，再写本次阶段标记，否则本次会立刻覆盖上次现场。
         checkPreviousSession()
-        markStage("crash_reporter_init")
+        updateMark(stage = "crash_reporter_init", state = "alive")
         record("boot", extra = "日志通道自检：能看到本文件说明 Download/bcrash 写入正常。")
-        markState("alive")
     }
 
     /** 必须在 GeckoRuntime.create() 之后调用。 */
@@ -100,7 +144,7 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
             replacedHandler = again
             Thread.setDefaultUncaughtExceptionHandler(this)
         }
-        markStage("ueh_installed")
+        if (isMainProcess) updateMark(stage = "ueh_installed")
     }
 
     /** 供 Activity.onResume 调用：Gecko 可能延迟注册 CrashHandler，被覆盖就重新装回来。 */
@@ -108,43 +152,18 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         if (Thread.getDefaultUncaughtExceptionHandler() !== this) installHandler()
     }
 
-    /**
-     * 记录当前执行到的阶段。同步覆盖写入，崩溃后下次启动能读出「最后停留点」。
-     * 每个调用点都包在 runCatching 里，绝不影响业务流程。
-     */
+    /** 记录当前执行到的阶段。同步写入，崩溃/强杀后下次启动能读出最后停留点。 */
     fun markStage(stage: String) {
         currentStage = stage
-        val a = app ?: return
-        runCatching {
-            val dir = File(a.filesDir, DIR_NAME).apply { mkdirs() }
-            val text = "stage=$stage\npid=${android.os.Process.myPid()}\n" +
-                "time=${Date()}\nbuild=${BuildConfig.VERSION_NAME}-${BuildConfig.BUILD_NUMBER}\n"
-            FileOutputStream(File(dir, STAGE_MARKER), false).use { out ->
-                out.write(text.toByteArray(Charsets.UTF_8))
-                out.flush()
-                out.fd.sync()
-            }
-        }
+        if (isMainProcess) updateMark(stage = stage)
     }
 
-    /** 生命周期状态写入存活标记，用于区分正常退出、后台回收与前台崩溃。 */
+    /** 生命周期状态：alive / background / finished。 */
     fun markState(state: String) {
-        val a = app ?: return
-        runCatching {
-            val dir = File(a.filesDir, DIR_NAME).apply { mkdirs() }
-            val text = "state=$state\npid=${android.os.Process.myPid()}\n" +
-                "timeMs=${System.currentTimeMillis()}\n" +
-                "time=${Date()}\nbuild=${BuildConfig.VERSION_NAME}-${BuildConfig.BUILD_NUMBER}\n"
-            FileOutputStream(File(dir, MARKER), false).use { out ->
-                out.write(text.toByteArray(Charsets.UTF_8))
-                out.flush()
-                out.fd.sync()
-            }
-        }
+        if (isMainProcess) updateMark(state = state)
     }
 
     override fun uncaughtException(thread: Thread, throwable: Throwable) {
-        // 第一条：同步落盘，绝不依赖任何异步框架。
         record(
             tag = "uncaught_exception",
             throwable = throwable,
@@ -157,7 +176,12 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
     }
 
     /** 任何位置发现异常都可调用；内部全程兜底，绝不向外抛异常。 */
-    fun record(tag: String, throwable: Throwable? = null, extra: String = "", stageOverride: String? = null) {
+    fun record(
+        tag: String,
+        throwable: Throwable? = null,
+        extra: String = "",
+        stageOverride: String? = null
+    ) {
         val a = app ?: return
         runCatching {
             val now = Date()
@@ -185,7 +209,10 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                     .append(" free=").append(rt.freeMemory()).append('\n')
                 append("--- end of record ---\n")
             }
-            val prefix = if (tag == "boot") "boot" else "crash"
+            val prefix = if (tag == "boot") "boot" else if (
+                tag == "force_stopped_by_system" || tag == "user_stopped_app" ||
+                tag == "install_or_update_restart"
+            ) "info" else "crash"
             val fileName = "$prefix-$stamp-$tag.txt"
 
             // 先写最稳的 File 通道，再尝试公共目录；顺序保证私有通道优先成功。
@@ -195,62 +222,172 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         }
     }
 
+    // ---------------------------------------------------------------- 主进程判定
+
+    @Volatile private var isMainProcess: Boolean = true
+
+    private fun isMainProcess(a: Application): Boolean {
+        val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Application.getProcessName()
+        } else {
+            runCatching { File("/proc/self/cmdline").readText().substringBefore('\u0000') }
+                .getOrDefault(a.packageName)
+        }
+        isMainProcess = name == a.packageName
+        return isMainProcess
+    }
+
+    // ---------------------------------------------------------------- 单一会话标记
+
+    /**
+     * 读现有标记 → 只覆盖传入字段 → 写 tmp 后 rename。
+     * 单次写入包含全部字段，state 与 stage 永远属于同一个 pid。
+     */
+    private fun updateMark(stage: String? = null, state: String? = null) {
+        val a = app ?: return
+        synchronized(markerLock) {
+            runCatching {
+                val dir = File(a.filesDir, DIR_NAME).apply { mkdirs() }
+                val file = File(dir, SESSION_MARKER)
+                val old = readMark(file) ?: readLegacyMark(dir)
+                val mark = SessionMark(
+                    state = state ?: old?.state ?: "alive",
+                    pid = android.os.Process.myPid(),
+                    timeMs = System.currentTimeMillis(),
+                    stage = stage ?: old?.stage ?: "app_start",
+                    build = "${BuildConfig.VERSION_NAME}-${BuildConfig.BUILD_NUMBER}"
+                )
+                val text = "state=${mark.state}\n" +
+                    "pid=${mark.pid}\n" +
+                    "timeMs=${mark.timeMs}\n" +
+                    "time=${Date(mark.timeMs)}\n" +
+                    "stage=${mark.stage}\n" +
+                    "build=${mark.build}\n" +
+                    "process=${a.packageName}\n"
+                val tmp = File(dir, "$SESSION_MARKER.tmp")
+                FileOutputStream(tmp, false).use { out ->
+                    out.write(text.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                    out.fd.sync()
+                }
+                if (!tmp.renameTo(file)) {
+                    file.writeText(text)
+                }
+            }
+        }
+    }
+
+    private fun readMark(file: File): SessionMark? = runCatching {
+        if (!file.exists()) return null
+        val t = file.readText()
+        fun f(k: String) = t.lineSequence().firstOrNull { it.startsWith(k) }?.substringAfter('=')
+        SessionMark(
+            state = f("state=") ?: "unknown",
+            pid = f("pid=")?.trim()?.toIntOrNull() ?: 0,
+            timeMs = f("timeMs=")?.trim()?.toLongOrNull() ?: 0L,
+            stage = f("stage=") ?: "unknown",
+            build = f("build=") ?: ""
+        )
+    }.getOrNull()
+
+    /** 兼容从 build 22~28 升级上来的旧标记文件。 */
+    private fun readLegacyMark(dir: File): SessionMark? {
+        val alive = runCatching { File(dir, OLD_ALIVE).readText() }.getOrNull() ?: return null
+        val stage = runCatching { File(dir, OLD_STAGE).readText() }.getOrDefault("")
+        fun f(text: String, k: String) = text.lineSequence()
+            .firstOrNull { it.startsWith(k) }?.substringAfter('=')
+        return SessionMark(
+            state = f(alive, "state=") ?: "unknown",
+            pid = f(alive, "pid=")?.trim()?.toIntOrNull() ?: 0,
+            timeMs = f(alive, "timeMs=")?.trim()?.toLongOrNull() ?: 0L,
+            stage = f(stage, "stage=") ?: "unknown",
+            build = f(alive, "build=") ?: ""
+        )
+    }
+
+    // ---------------------------------------------------------------- 上次会话判定
+
     private fun checkPreviousSession() {
         val a = app ?: return
-        val marker = File(File(a.filesDir, DIR_NAME), MARKER)
-        if (!marker.exists()) return // 首次安装，无需补记
-        val markerText = runCatching { marker.readText() }.getOrDefault("(不可读)")
-        fun field(key: String): String? = markerText.lineSequence()
-            .firstOrNull { it.startsWith(key) }?.substringAfter('=')
+        val dir = File(a.filesDir, DIR_NAME)
+        val mark = readMark(File(dir, SESSION_MARKER)) ?: readLegacyMark(dir) ?: return
+        if (mark.state == "finished") return // 正常退出，无需补记
 
-        val state = field("state=") ?: "unknown"
-        val oldPid = field("pid=")?.trim()?.toIntOrNull() ?: 0
-        val markerMs = field("timeMs=")?.trim()?.toLongOrNull() ?: 0L
-        // 只有「已正常结束」不补记；其余状态说明上次进程没走完结束流程。
-        if (state == "finished") return
+        // 去重：同一「上次进程 pid + 存活标记时间」只补记一次。
+        // vivo 一键清理后系统会连续拉起多个进程，旧实现会把同一份标记反复写成多条。
+        val signature = "${mark.pid}:${mark.timeMs}:${mark.state}"
+        val reportedFile = File(dir, REPORTED_MARKER)
+        val reported = readReported(reportedFile)
+        if (reported.signature == signature) return
 
-        val stageText = runCatching {
-            File(a.filesDir, "$DIR_NAME/$STAGE_MARKER").readText()
-        }.getOrDefault("(无阶段标记，可能是旧版本写入的存活标记)")
-        val stagePid = stageText.lineSequence()
-            .firstOrNull { it.startsWith("pid=") }?.substringAfter('=')?.trim()?.toIntOrNull() ?: 0
-        val stageValid = oldPid != 0 && stagePid == oldPid
-        val stageName = stageText.lineSequence()
-            .firstOrNull { it.startsWith("stage=") }?.substringAfter('=') ?: "unknown"
-        val stageSummary = if (stageValid) stageName else "无效（本次启动已覆盖）"
+        val install = readInstallInfo(mark.timeMs)
+        val exit = readExitInfo(mark.pid)
+        val now = System.currentTimeMillis()
+        val elapsed = now - mark.timeMs
 
-        val install = readInstallInfo(markerMs)
-        val exitInfo = readExitInfo(oldPid)
-        // 安装/覆盖更新期间系统包管理器会强杀旧进程，这类重启不是崩溃，单独归类。
+        val tag = when {
+            install.second -> "install_or_update_restart"
+            exit.forceStopped -> "force_stopped_by_system"
+            exit.userStopped -> "user_stopped_app"
+            exit.matched -> "previous_session_died"
+            else -> "previous_session_died_unknown"
+        }
+
+        // 系统清理器连杀时会在几秒内产生多个新进程，同类信息 30 秒内只留一条；
+        // 真实崩溃（previous_session_died*）永不抑制，避免漏掉现场。
+        val infoOnly = tag == "force_stopped_by_system" || tag == "user_stopped_app"
+        if (infoOnly && reported.tag == tag && now - reported.timeMs < 30_000L) {
+            writeReported(reportedFile, signature, tag, now)
+            return
+        }
+        writeReported(reportedFile, signature, tag, now)
+
         record(
-            tag = if (install.second) "install_or_update_restart" else "previous_session_died",
-            stageOverride = stageSummary,
+            tag = tag,
+            stageOverride = mark.stage,
             extra = buildString {
-                append("上次进程未正常结束，存活标记状态=").append(state)
-                    .append("，上次 pid=").append(oldPid).append("。\n")
-                append("state=alive 且未走到 onStop，说明进程在前台被终止；")
-                    .append("Java 层没有任何异常记录。\n")
-                if (install.second) {
-                    append("判定：APK 安装/覆盖更新导致系统终止旧进程，属于正常重启，不是崩溃。\n")
-                } else {
-                    append("判定：非安装期终止，可能是 native 崩溃、系统信号或 ROM 后台策略强杀。\n")
-                    append("注意：这类终止不走 Java 回调，本文件是下次冷启动补写的，不含崩溃瞬间堆栈；\n")
-                    append("下方的 ApplicationExitInfo 才是系统的真实退出原因与 native trace。\n")
+                append("上次进程 pid=").append(mark.pid)
+                    .append("，存活标记状态=").append(mark.state)
+                    .append("，最后阶段=").append(mark.stage).append("。\n")
+                append("本次启动距上次标记 ").append(elapsed).append(" ms。\n\n")
+                append("--- 判定 ---\n")
+                when (tag) {
+                    "force_stopped_by_system" -> append(
+                        "系统（vivo/OriginOS 一键清理 single-cleaner）FORCE STOP 强杀应用，\n" +
+                            "属于系统主动终止，**不是应用崩溃**，无需修复代码。\n" +
+                            "若希望避免，请在系统「设置 → 电池/后台管理」把本应用加入白名单/允许后台运行。\n"
+                    )
+                    "user_stopped_app" -> append(
+                        "用户主动结束应用（从最近任务划掉等），不是崩溃。\n"
+                    )
+                    "install_or_update_restart" -> append(
+                        "APK 安装/覆盖更新期间系统包管理器终止旧进程，属于正常重启，不是崩溃。\n"
+                    )
+                    "previous_session_died" -> append(
+                        "系统记录了真实异常退出（崩溃 / native 信号 / 低内存 / ANR），详见下方退出原因。\n"
+                    )
+                    else -> append(
+                        "系统未记录上次进程 pid=").append(mark.pid).append(
+                        " 的退出原因。\n" +
+                            "vivo 的 FORCE STOP 经常不生成 exit reason；也可能是系统记录已被清理。\n" +
+                            "此条**不能据此断定是崩溃**，下方历史记录均不含上次进程。\n"
+                    )
                 }
-                append("\n--- 存活标记原文 ---\n").append(markerText).append('\n')
-                append("--- 最后停留阶段 ---\n")
-                    .append(if (stageValid) stageText else
-                        "阶段标记 pid=$stagePid，上次进程 pid=$oldPid，不一致；本次启动已覆盖，无法反映上次终止点。")
-                    .append('\n')
-                append("--- 安装/更新时间（PackageInfo，系统 API，本地读取）---\n")
+                append("\n--- 会话标记原文 ---\n")
+                append("state=").append(mark.state).append('\n')
+                append("pid=").append(mark.pid).append('\n')
+                append("timeMs=").append(mark.timeMs).append('\n')
+                append("stage=").append(mark.stage).append('\n')
+                append("build=").append(mark.build).append('\n')
+                append("\n--- 安装/更新时间（PackageInfo，系统 API，本地读取）---\n")
                     .append(install.first).append('\n')
-                append("--- 系统退出原因（ApplicationExitInfo）---\n").append(exitInfo).append('\n')
+                append("--- 系统退出原因（ApplicationExitInfo）---\n").append(exit.text).append('\n')
             }
         )
     }
 
     /**
-     * 用 PackageInfo.firstInstallTime / lastUpdateTime 判断上次进程是否死于 APK 安装。
+     * 用 PackageInfo.lastUpdateTime 判断上次进程是否死于 APK 安装。
      * 返回「说明文本」与「是否为安装期重启」。完全本地、无需任何权限。
      */
     @Suppress("DEPRECATION")
@@ -263,8 +400,8 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
             } else {
                 pm.getPackageInfo(a.packageName, 0)
             }
+            // marker 写于安装之后属正常；只有 marker 早于/贴近安装时刻才可能是安装期重启。
             val delta = pi.lastUpdateTime - markerMs
-            // 存活标记写于安装时刻之后 10 分钟内：说明进程是在安装/覆盖更新时被杀的。
             val recent = markerMs > 0L && delta >= 0L && delta <= 10L * 60L * 1000L
             val text = buildString {
                 append("firstInstallTime=").append(Date(pi.firstInstallTime)).append('\n')
@@ -272,7 +409,8 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                 append("上次存活标记时间=").append(
                     if (markerMs > 0L) Date(markerMs).toString() else "(旧版日志无 timeMs 字段)"
                 ).append('\n')
-                append("lastUpdateTime - marker = ").append(delta).append(" ms\n")
+                append("lastUpdateTime - marker = ").append(delta).append(" ms")
+                append(if (delta < 0) "（标记晚于安装，属正常启动后）" else "").append('\n')
                 append("判定：").append(
                     if (recent) "安装/覆盖更新期间被系统包管理器终止（正常重启）"
                     else "非安装期终止"
@@ -284,23 +422,24 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
 
     /**
      * Android 11+ 官方本地接口：读取本包已退出进程的原因与 native tombstone 摘要。
-     * 无需权限、不联网；这是补齐「补记没有堆栈」的关键。
+     * 无需权限、不联网。返回按「是否匹配上次 pid」分类后的摘要。
      */
-    private fun readExitInfo(previousPid: Int): String {
+    private fun readExitInfo(previousPid: Int): ExitSummary {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            return "本机 sdk=${Build.VERSION.SDK_INT} < 30，系统不提供 ApplicationExitInfo。"
+            return ExitSummary("本机 sdk=${Build.VERSION.SDK_INT} < 30，系统不提供 ApplicationExitInfo。",
+                false, false, false)
         }
-        val a = app ?: return "Application 未初始化。"
+        val a = app ?: return ExitSummary("Application 未初始化。", false, false, false)
         return runCatching {
             val am = a.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            // pid=0 表示取本包全部历史记录；按时间倒序。
             val list = am.getHistoricalProcessExitReasons(a.packageName, 0, 20)
+            val matchedInfo = list.firstOrNull { it.pid == previousPid }
             val sb = StringBuilder()
-            if (list.isEmpty()) sb.append(
-                "(系统未返回任何历史退出记录)\n" +
-                "  可能原因：vivo/OriginOS 未实现或已清理该记录；或上次进程是被包管理器在 APK\n" +
-                "  安装/覆盖更新时终止（这类终止不产生 exit reason）。此时请优先看上面的安装/更新时间段。\n"
-            )
+            if (matchedInfo == null) {
+                sb.append("未找到 pid=").append(previousPid)
+                    .append(" 的退出记录。系统未返回该进程的退出原因，")
+                    .append("不能据此断定崩溃。\n")
+            }
             list.take(8).forEach { info ->
                 val matched = info.pid == previousPid
                 sb.append("reason=").append(reasonName(info.reason))
@@ -311,7 +450,7 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                     .append(" time=").append(Date(info.timestamp))
                     .append(" pss=").append(info.pss).append("KB")
                     .append(" rss=").append(info.rss).append("KB")
-                    .append(if (matched) "  <== 上次进程" else "")
+                    .append(if (matched) "  <== 上次进程" else "  (历史记录，不含上次进程)")
                     .append('\n')
                 info.description?.let { sb.append("  description=").append(it).append('\n') }
                 if (matched) {
@@ -329,8 +468,21 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
                     }
                 }
             }
-            sb.toString()
-        }.getOrElse { t -> "读取 ApplicationExitInfo 失败：${t.javaClass.simpleName}: ${t.message}" }
+            if (list.isEmpty()) sb.append(
+                "(系统未返回任何历史退出记录；vivo/OriginOS 可能未实现或已清理)\n"
+            )
+            val r = matchedInfo?.reason ?: -1
+            val desc = matchedInfo?.description.orEmpty()
+            val force = r == 10 && (
+                desc.contains("FORCE STOP", true) ||
+                    desc.contains("single-cleaner", true) ||
+                    desc.contains("force stop", true)
+            )
+            ExitSummary(sb.toString(), matchedInfo != null, force, r == 10)
+        }.getOrElse { t ->
+            ExitSummary("读取 ApplicationExitInfo 失败：${t.javaClass.simpleName}: ${t.message}",
+                false, false, false)
+        }
     }
 
     /** 用数字常量映射，避免低版本加载 API 30 类。 */
@@ -362,6 +514,8 @@ object CrashReporter : Thread.UncaughtExceptionHandler {
         4 -> "SIGILL"
         else -> "-"
     }
+
+    // ---------------------------------------------------------------- 写入
 
     /** 三处本地目录：公共下载（低版本）、外部私有下载、内部私有目录。 */
     private fun writeToFiles(a: Application, name: String, text: String, append: Boolean) {

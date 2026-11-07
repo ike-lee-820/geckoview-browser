@@ -71,3 +71,12 @@ adb install -r geckoview-browser-latest.apk        # 安装固定签名版，沿
 若 `pm uninstall -k` 在当前系统被拒绝，只能用 root / 自定义 recovery 直接备份并回写 `/data/data/com.local.geckobrowser`，或依赖 ROM 自带的整机应用数据备份。没有电脑或 root 时，这一次的数据清空无法避免。
 
 装好固定签名版之后，请立刻到「设置 → 备份与恢复」导出一份备份，后续任何更新都不会再丢数据。
+
+## vivo / OriginOS 一键清理导致应用被强杀
+
+若 `Download/bcrash` 里出现 `info-*-force_stopped_by_system.txt`，
+`ApplicationExitInfo` 会写 `reason=USER_REQUESTED(10)` 与
+`description=[FORCE STOP] stop com.local.geckobrowser due to single-cleaner`。
+这是系统内存清理器主动终止应用，**不是应用崩溃**，代码侧无法修复。
+请在系统「设置 → 电池 / 后台管理 / 一键清理白名单」里把本应用设为允许后台运行。
+日志模块对这类终止做了去重与 30 秒抑制，不会刷屏，也不会误写成 crash。

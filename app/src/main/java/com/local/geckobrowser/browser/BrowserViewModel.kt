@@ -333,8 +333,17 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------------------------------------------------------- 扩展
-    /** 本地侧载：assets 内置扩展通过 ensureBuiltIn 加载，不依赖 AMO。 */
-    private suspend fun loadBuiltInExtensions() = withContext(Dispatchers.IO) {
+    /**
+     * 本地侧载：assets 内置扩展通过 ensureBuiltIn 加载，不依赖 AMO。
+     *
+     * 【修复】JavaDoc 中 WebExtensionController 的 ensureBuiltIn / install / list /
+     * enable / disable / uninstall / setAllowedInPrivateBrowsing 均标注 @HandlerThread，
+     * 必须在带 Handler 的线程上调用。旧实现跑在 Dispatchers.IO，触发
+     * IllegalThreadStateException: Must be ran on a thread with a Handler!，
+     * 导致阅读模式与翻译两个内置扩展始终加载失败（异常被兜住，进程没崩）。
+     * 统一切到主线程（Looper.getMainLooper() 已具备 Handler）。
+     */
+    private suspend fun loadBuiltInExtensions() = withContext(Dispatchers.Main.immediate) {
         val controller = GeckoEngine.runtime(context).webExtensionController
         runCatching {
             controller.ensureBuiltIn("resource://android/assets/extensions/readermode/", "reader@local.browser")
@@ -344,10 +353,15 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun installExtensionFromSaf(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            // WebExtensionController.install(String) 接收扩展 URI；侧载文件由 SAF 复制到内部存储后传入。
-            val local = com.local.geckobrowser.feature.ExtensionInstaller.copyToInternal(context, uri)
-            runCatching { GeckoEngine.runtime(context).webExtensionController.install(local) }
+        viewModelScope.launch {
+            // 文件复制是纯 IO，留在 IO 线程；install 本身必须切回 @HandlerThread。
+            val local = withContext(Dispatchers.IO) {
+                com.local.geckobrowser.feature.ExtensionInstaller.copyToInternal(context, uri)
+            }
+            withContext(Dispatchers.Main.immediate) {
+                runCatching { GeckoEngine.runtime(context).webExtensionController.install(local) }
+                    .onFailure { t -> CrashReporter.record("extension_install", t) }
+            }
             refreshExtensions()
         }
     }

@@ -838,3 +838,23 @@ Java 层无任何异常记录，判定为 native 级或系统信号终止。为�
 需核对当前 GeckoView Beta 版本 Changelog。
 
 `ACTION_CRASHED` / `EXTRA_*` / `crashHandler(...)` 均**只做签名核对、不在代码中调用**，符合第 0.3 节自检要求。
+
+## 五、WebExtensionController 线程约束与系统 FORCE STOP 诊断核对（2026-11-07）
+
+| # | 文档 | URL | 核对结论 |
+|---|---|---|---|
+| 15 | `WebExtensionController` JavaDoc | https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtensionController.html | 已逐项核对 `ensureBuiltIn(String uri, String id)`、`install(String uri, String installationMethod)`、`list()`、`enable(WebExtension, int)`、`disable(WebExtension, int)`、`uninstall(WebExtension)`、`setAllowedInPrivateBrowsing(WebExtension, boolean)` 签名，均返回 `GeckoResult`，且**全部标注 `@HandlerThread`** —— 必须在带 Handler 的线程调用。未标注 `@ExperimentalGeckoViewApi`。 |
+| 16 | Android `ApplicationExitInfo`（复核，系统 API） | Android 11 / API 30+ | `REASON_USER_REQUESTED = 10` 表示用户/系统主动结束；vivo/OriginOS 的 `description=[FORCE STOP] stop <pkg> due to single-cleaner` 属于一键清理强杀，**不是应用崩溃**，且常不产生 native trace。 |
+
+**修复依据**：用户 build 28 日志里唯一真实异常为
+`java.lang.IllegalThreadStateException: Must be ran on a thread with a Handler!`
+at `WebExtensionController.ensureBuiltIn`（堆栈经 `ThreadUtils.assertOnHandlerThread`），
+根因是 `loadBuiltInExtensions()` / `installExtensionFromSaf()` 把调用放在 `Dispatchers.IO`。
+已统一切到 `Dispatchers.Main.immediate`；文件复制等纯 IO 仍留在 IO。
+其余 `list/enable/disable/uninstall/setAllowedInPrivateBrowsing` 原就在 `viewModelScope.launch`
+（Main dispatcher），符合 `@HandlerThread`。
+
+日志侧同步修正：按 `ApplicationExitInfo` 的 reason/description 把系统 FORCE STOP 归类为
+`force_stopped_by_system`（写 `info-*.txt` 而非 `crash-*.txt`）、补记去重与 30 秒窗口抑制、
+合并 `session.marker` 单文件、仅主进程写标记。以上均为 Android 系统 API 或本地逻辑，
+未新增任何 GeckoView API 调用。
