@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Print
@@ -97,11 +96,8 @@ import org.mozilla.geckoview.GeckoView
 fun BrowserScreen(
     vm: BrowserViewModel,
     nav: NavHostController,
-    voiceResult: String?,
-    onVoiceResultConsumed: () -> Unit,
     fileResult: android.net.Uri?,
     onFileResultConsumed: () -> Unit,
-    onRequestVoice: () -> Unit,
     onRequestFilePicker: () -> Unit,
     onEnterPip: () -> Unit
 ) {
@@ -160,11 +156,6 @@ fun BrowserScreen(
         }
     }
 
-    LaunchedEffect(voiceResult) {
-        if (!voiceResult.isNullOrBlank()) {
-            vm.onInput(voiceResult); vm.submitInput(voiceResult); onVoiceResultConsumed()
-        }
-    }
     LaunchedEffect(fileResult) {
         val p = prompt
         if (fileResult != null && p?.kind == EngineEvent.PromptKind.FILE) {
@@ -192,7 +183,7 @@ fun BrowserScreen(
         },
         topBar = {
             if (state.toolbarPosition == ToolbarPosition.TOP && !state.isFullScreen) {
-                BrowserToolbar(state, vm, nav, onVoice = onRequestVoice, onMenu = { showMenu = true })
+                BrowserToolbar(state, vm, nav, onMenu = { showMenu = true })
             }
         },
         bottomBar = {
@@ -233,8 +224,13 @@ fun BrowserScreen(
                         }
                     },
                     update = { view ->
-                        session?.let { s ->
-                            if (view.getSession() !== s) view.setSession(s)
+                        val s = session
+                        if (s == null) {
+                            // Session 尚未恢复或已被释放：解绑旧 Session，避免绑定到已 close 的实例。
+                            runCatching { view.releaseSession() }
+                        } else if (view.getSession() !== s) {
+                            // 崩溃/释放中的 Session 绑定可能抛异常，兜底避免异常冒泡杀掉整个进程。
+                            runCatching { view.setSession(s) }
                         }
                     }
                 )
@@ -370,18 +366,11 @@ private fun BrowserToolbar(
     state: com.local.geckobrowser.browser.BrowserUiState,
     vm: BrowserViewModel,
     nav: NavHostController,
-    onVoice: () -> Unit,
     onMenu: () -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { vm.goBack() }, enabled = state.canGoBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "后退")
-            }
-            IconButton(onClick = { vm.goForward() }, enabled = state.canGoForward) {
-                Icon(Icons.Default.ArrowForward, contentDescription = "前进")
-            }
             OutlinedTextField(
                 value = state.input,
                 onValueChange = { vm.onInput(it) },
@@ -399,9 +388,6 @@ private fun BrowserToolbar(
                         IconButton(onClick = { if (state.isLoading) vm.stop() else vm.reload() }) {
                             Icon(if (state.isLoading) Icons.Default.Close else Icons.Default.Refresh,
                                 contentDescription = if (state.isLoading) "停止" else "刷新")
-                        }
-                        IconButton(onClick = onVoice) {
-                            Icon(Icons.Default.Mic, contentDescription = "语音搜索")
                         }
                     }
                 },
@@ -441,6 +427,23 @@ private fun BrowserMenuSheet(
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(Modifier.padding(16.dp)) {
+            // 上/下一页由工具栏移入菜单栏，工具栏只保留地址栏、标签计数与菜单入口。
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp)) {
+                        IconButton(onClick = { vm.goBack(); onDismiss() }, enabled = state.canGoBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "上一页")
+                        }
+                        Text("上一页", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp)) {
+                        IconButton(onClick = { vm.goForward(); onDismiss() }, enabled = state.canGoForward) {
+                            Icon(Icons.Default.ArrowForward, contentDescription = "下一页")
+                        }
+                        Text("下一页", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     MenuAction(Icons.Default.Add, "新建标签") { vm.newTab(); onDismiss() }

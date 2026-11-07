@@ -75,29 +75,37 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     private val _autocomplete = MutableStateFlow<List<com.local.geckobrowser.feature.Suggestion>>(emptyList())
     val autocomplete = _autocomplete.asStateFlow()
 
+    /** 启动期异步任务统一兜底：未捕获异常不得直接杀掉进程（表现为「打开过一会闪退」）。 */
+    private fun safeLaunch(block: suspend () -> Unit) = viewModelScope.launch {
+        // 用 try/catch 而非 runCatching：runCatching 的 lambda 不是 suspend 的，无法调用协程体。
+        try {
+            block()
+        } catch (t: Throwable) {
+            android.util.Log.w("BrowserViewModel", "启动期异步任务已忽略异常", t)
+        }
+    }
+
     init {
         SearchEngineManager.appContextHolder = context
-        viewModelScope.launch {
+        safeLaunch {
             prefs.observe().collect { p ->
                 _ui.value = _ui.value.copy(toolbarPosition = p.toolbarPosition, themeMode = p.themeMode)
             }
         }
-        viewModelScope.launch { db.bookmarkDao().all().collect { _bookmarks.value = it } }
-        viewModelScope.launch { db.historyDao().all().collect { _history.value = it } }
-        viewModelScope.launch { db.downloadDao().all().collect { _downloads.value = it } }
-        viewModelScope.launch { db.siteSettingDao().all().collect { _siteSettings.value = it } }
+        safeLaunch { db.bookmarkDao().all().collect { _bookmarks.value = it } }
+        safeLaunch { db.historyDao().all().collect { _history.value = it } }
+        safeLaunch { db.downloadDao().all().collect { _downloads.value = it } }
+        safeLaunch { db.siteSettingDao().all().collect { _siteSettings.value = it } }
 
-        // 进程被杀后恢复标签列表、分组结构、激活位置与滚动位置。
-        manager.restoreFromDisk()
+        // 进程被杀后恢复标签列表、分组结构、激活位置与滚动位置；恢复完成后重新绑定 Session。
+        manager.restoreFromDisk { bindActiveSession() }
         if (manager.tabs.isEmpty()) manager.createSession()
         bindActiveSession()
 
         // 启动时检查更新（可在设置中关闭）；只访问 GitHub Release API，不上传任何本地数据。
-        viewModelScope.launch {
-            if (prefs.checkUpdateOnLaunch()) checkForUpdate(manual = false)
-        }
+        safeLaunch { if (prefs.checkUpdateOnLaunch()) checkForUpdate(manual = false) }
         // 本地侧载扩展：从 assets 安装内置扩展，不依赖 AMO 远程安装。
-        viewModelScope.launch { loadBuiltInExtensions() }
+        safeLaunch { loadBuiltInExtensions() }
     }
 
     // ---------------------------------------------------------------- 用户动作
@@ -324,15 +332,17 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshExtensions() {
         viewModelScope.launch {
-            val result = GeckoEngine.runtime(context).webExtensionController.list()
-            // webExtensionController.list() 返回 GeckoResult<List<WebExtension>>，accept 的回调参数是 List 而非 Array。
-            result.accept { list: List<WebExtension>? ->
-                _extensions.value = (list ?: emptyList<WebExtension>()).map { ext ->
-                    com.local.geckobrowser.data.ExtensionInfo(
-                        id = ext.id, name = ext.metaData?.name ?: ext.id,
-                        version = ext.metaData?.version ?: "", enabled = ext.metaData?.enabled ?: false,
-                        allowedInPrivate = false
-                    )
+            runCatching {
+                val result = GeckoEngine.runtime(context).webExtensionController.list()
+                // webExtensionController.list() 返回 GeckoResult<List<WebExtension>>，accept 的回调参数是 List 而非 Array。
+                result.accept { list: List<WebExtension>? ->
+                    _extensions.value = (list ?: emptyList<WebExtension>()).map { ext ->
+                        com.local.geckobrowser.data.ExtensionInfo(
+                            id = ext.id, name = ext.metaData?.name ?: ext.id,
+                            version = ext.metaData?.version ?: "", enabled = ext.metaData?.enabled ?: false,
+                            allowedInPrivate = false
+                        )
+                    }
                 }
             }
         }

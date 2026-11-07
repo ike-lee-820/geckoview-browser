@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.speech.RecognizerIntent
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,19 +26,11 @@ import org.mozilla.geckoview.GeckoView
 class MainActivity : ComponentActivity() {
 
     private val vm: BrowserViewModel by viewModels()
-    private val voiceText = mutableStateOf<String?>(null)
     private val fileResult = mutableStateOf<android.net.Uri?>(null)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* 权限结果由 PermissionDelegate 的回调在用户交互时读取系统状态 */ }
-
-    private val voiceLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val text = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-        if (!text.isNullOrBlank()) voiceText.value = text
-    }
 
     private val fileLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -54,7 +45,9 @@ class MainActivity : ComponentActivity() {
         }
         SearchEngineManager.appContextHolder = applicationContext
 
-        requestRuntimePermissions()
+        // 延后到首帧之后：启动即弹权限框会让 Activity 立刻 pause/resume，
+        // GeckoView 刚 attach 的 surface 被快速销毁重建，部分设备上会触发渲染进程崩溃。
+        window.decorView.post { requestRuntimePermissions() }
         handleIncomingIntent(intent)
 
         setContent {
@@ -62,11 +55,8 @@ class MainActivity : ComponentActivity() {
             GeckoBrowserTheme(mode = state.themeMode) {
                 AppNavHost(
                     viewModel = vm,
-                    voiceResult = voiceText.value,
-                    onVoiceResultConsumed = { voiceText.value = null },
                     fileResult = fileResult.value,
                     onFileResultConsumed = { fileResult.value = null },
-                    onRequestVoice = { startVoiceSearch() },
                     onRequestFilePicker = { fileLauncher.launch("*/*") },
                     onEnterPip = { enterPip() }
                 )
@@ -83,14 +73,6 @@ class MainActivity : ComponentActivity() {
         }
         // 媒体通知依赖通知权限开启；WebRTC 需要 CAMERA / RECORD_AUDIO，由应用自行声明。
         if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
-    }
-
-    private fun startVoiceSearch() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要搜索的内容")
-        }
-        runCatching { voiceLauncher.launch(intent) }
     }
 
     private fun enterPip() {

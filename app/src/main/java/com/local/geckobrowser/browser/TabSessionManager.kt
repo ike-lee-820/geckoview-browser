@@ -281,27 +281,49 @@ class TabSessionManager(
     }
 
     // ---------------------------------------------------------------- 恢复
-    fun restoreFromDisk() {
+    fun restoreFromDisk(onRestored: (() -> Unit)? = null) {
         scope.launch(Dispatchers.IO) {
-            val snaps = database.tabGroupDao().tabSnapshots()
-            val groupEntities = database.tabGroupDao().allGroups()
+            // 数据库读取失败不得让启动流程抛未捕获异常。
+            // DAO 方法是 suspend，不能放进 runCatching 的非 suspend lambda 里，改用 try/catch。
+            val snaps: List<com.local.geckobrowser.data.TabSnapshotEntity> =
+                try { database.tabGroupDao().tabSnapshots() } catch (t: Throwable) { emptyList() }
+            val groupEntities: List<com.local.geckobrowser.data.TabGroupEntity> =
+                try { database.tabGroupDao().allGroups() } catch (t: Throwable) { emptyList() }
             withContextMain {
-                groups.clear()
-                groups.addAll(groupEntities.map { TabGroupState(it.id, it.name, it.colorArgb, it.collapsed) })
-                snaps.forEach { s ->
-                    createSession(
-                        url = s.url, isPrivate = s.isPrivate, groupId = s.groupId,
-                        activate = false, restoredState = s.sessionStateSerialized
-                    ).also { t ->
-                        t.title = s.title
-                        t.isPinned = s.isPinned
-                        t.scrollX = s.scrollX
-                        t.scrollY = s.scrollY
-                        t.readerModeActive = s.readerModeActive
+                runCatching {
+                    groups.clear()
+                    groups.addAll(groupEntities.map { TabGroupState(it.id, it.name, it.colorArgb, it.collapsed) })
+                    // 启动期占位标签：有历史快照时移除，避免每次启动累加空白标签。
+                    if (snaps.isNotEmpty() && tabs.size == 1 &&
+                        tabs[0].url == "about:blank" && tabs[0].sessionStateSerialized == null) {
+                        tabs[0].session?.let { sessionToTab.remove(it); runCatching { it.close() } }
+                        tabs.removeAt(0)
+                        activeTabId = ""
+                    }
+                    snaps.forEach { s ->
+                        // 后台标签只恢复元数据，不立即 open GeckoSession。
+                        // 启动即一次性拉起多个内容进程，是「打开过一会闪退」的高风险点（内存/内容进程被杀）；
+                        // 切到该标签时由 switchTo -> recreateSession 按需 open，TabState 元数据始终保留。
+                        tabs.add(
+                            TabState(
+                                id = s.id, session = null, title = s.title, url = s.url,
+                                isPrivate = s.isPrivate, isPinned = s.isPinned,
+                                groupId = s.groupId, lastUsed = s.lastUsed,
+                                scrollX = s.scrollX, scrollY = s.scrollY,
+                                readerModeActive = s.readerModeActive,
+                                sessionStateSerialized = s.sessionStateSerialized
+                            )
+                        )
+                        if (s.isActive) activeTabId = s.id
+                    }
+                    if (tabs.isEmpty()) createSession()
+                    else {
+                        if (activeTabId.isBlank() || tab(activeTabId) == null) activeTabId = tabs.first().id
+                        val active = tab(activeTabId)
+                        if (active != null && active.session == null) recreateSession(active)
                     }
                 }
-                if (tabs.isEmpty()) createSession()
-                else if (activeTabId.isBlank()) activeTabId = tabs.first().id
+                runCatching { onRestored?.invoke() }
             }
         }
     }

@@ -22,11 +22,8 @@ object Routes {
 @Composable
 fun AppNavHost(
     viewModel: BrowserViewModel,
-    voiceResult: String?,
-    onVoiceResultConsumed: () -> Unit,
     fileResult: android.net.Uri?,
     onFileResultConsumed: () -> Unit,
-    onRequestVoice: () -> Unit,
     onRequestFilePicker: () -> Unit,
     onEnterPip: () -> Unit,
     navController: NavHostController = rememberNavController()
@@ -36,11 +33,8 @@ fun AppNavHost(
             BrowserScreen(
                 vm = viewModel,
                 nav = navController,
-                voiceResult = voiceResult,
-                onVoiceResultConsumed = onVoiceResultConsumed,
                 fileResult = fileResult,
                 onFileResultConsumed = onFileResultConsumed,
-                onRequestVoice = onRequestVoice,
                 onRequestFilePicker = onRequestFilePicker,
                 onEnterPip = onEnterPip
             )

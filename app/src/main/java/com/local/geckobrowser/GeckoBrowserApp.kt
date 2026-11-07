@@ -29,8 +29,30 @@ class GeckoBrowserApp : Application() {
         database = AppDatabase.build(this)
         preferences = PreferencesDataStore(this)
         updateManager = UpdateManager(this)
+        installCrashLogger()
         // 预热 Gecko：可以在真正加载页面前完成初始化，符合包摘要中「预加载 Gecko」的用法。
-        GeckoEngine.runtime(this)
+        runCatching { GeckoEngine.runtime(this) }
+    }
+
+    /**
+     * 本地崩溃日志：只写入应用私有目录，不上传、不联网。
+     * 用于定位启动后异步阶段（扩展加载 / 会话恢复 / 更新检查）的闪退。
+     */
+    private fun installCrashLogger() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val dir = java.io.File(filesDir, "crashes").apply { mkdirs() }
+                java.io.File(dir, "crash-${System.currentTimeMillis()}.txt").writeText(
+                    buildString {
+                        append("time=").append(java.util.Date()).append('\n')
+                        append("thread=").append(thread.name).append('\n')
+                        append(android.util.Log.getStackTraceString(throwable))
+                    }
+                )
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
     }
 }
 
