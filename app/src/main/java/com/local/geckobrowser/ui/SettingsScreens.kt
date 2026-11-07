@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -109,7 +110,8 @@ fun SettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
     }
 
     Scaffold(topBar = {
-        Text("设置", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
+        Text("设置", style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.statusBarsPadding().padding(16.dp))
     }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding)) {
             item { SectionTitle("外观") }
@@ -494,7 +496,8 @@ private fun setClear(vm: BrowserViewModel, cache: Boolean? = null, cookies: Bool
 @Composable
 fun SiteSettingsScreen(vm: BrowserViewModel, nav: NavHostController) {
     val list by vm.siteSettings.collectAsState()
-    Scaffold(topBar = { Text("站点设置", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp)) }) { padding ->
+    Scaffold(topBar = { Text("站点设置", style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.statusBarsPadding().padding(16.dp)) }) { padding ->
         if (list.isEmpty()) {
             EmptyState("暂无站点例外", "允许或阻止站点权限后，例外记录会保存在本地", Icons.Default.Security)
         } else {
@@ -533,7 +536,8 @@ fun ExtensionsScreen(vm: BrowserViewModel, nav: NavHostController) {
     val saf = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) vm.installExtensionFromSaf(uri)
     }
-    Scaffold(topBar = { Text("扩展", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp)) }) { padding ->
+    Scaffold(topBar = { Text("扩展", style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.statusBarsPadding().padding(16.dp)) }) { padding ->
         Column(Modifier.padding(padding)) {
             Text("仅支持本地侧载 .xpi，不依赖 AMO 远程安装；移动端 WebExtension UI API 不完整，action 入口由宿主菜单提供。",
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))

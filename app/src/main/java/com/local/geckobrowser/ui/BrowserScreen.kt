@@ -3,18 +3,24 @@ package com.local.geckobrowser.ui
 import android.annotation.SuppressLint
 import android.view.KeyEvent
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
@@ -46,7 +53,6 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,6 +76,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
@@ -126,7 +133,6 @@ fun BrowserScreen(
     var promptSecondary by remember { mutableStateOf("") }
     var translateAvailable by remember { mutableStateOf(false) }
     var canPip by remember { mutableStateOf(false) }
-    var refreshGesture by remember { mutableStateOf(false) }
 
     // Delegate 事件统一在此消费，全部以 Material 3 组件承载。
     LaunchedEffect(Unit) {
@@ -175,9 +181,11 @@ fun BrowserScreen(
     }
 
     Scaffold(
-        // 【修复④】Edge-to-edge 下 Scaffold 的 contentWindowInsets 默认不含 IME，
-        // 底部工具栏会被虚拟键盘盖住。给整个 Scaffold 加 imePadding：
-        // 键盘弹起时底部留出 IME 高度，bottomBar 自动抬到键盘上方，内容区同步收缩。
+        // 【修复②：预留系统栏空间】edge-to-edge 下 topBar / bottomBar 不吃 Scaffold 的
+        // contentWindowInsets，必须自己加 statusBarsPadding / navigationBarsPadding，
+        // 否则地址栏顶进状态栏、底部工具栏压在系统导航条（三键/手势条）下面。
+        // imePadding 让键盘弹起时底部工具栏抬到键盘上方；contentWindowInsets 置 0
+        // 避免 content 与 topBar/bottomBar 的 inset 被重复计算。
         modifier = Modifier.fillMaxSize().imePadding().onPreviewKeyEvent { e ->
             if (!e.isCtrlPressed) return@onPreviewKeyEvent false
             when (e.key) {
@@ -189,14 +197,17 @@ fun BrowserScreen(
                 else -> false
             }
         },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             if (state.toolbarPosition == ToolbarPosition.TOP && !state.isFullScreen) {
-                BrowserToolbar(state, vm, nav, onMenu = { showMenu = true })
+                BrowserToolbar(state, vm, nav, suggestions,
+                    modifier = Modifier.statusBarsPadding(), onMenu = { showMenu = true })
             }
         },
         bottomBar = {
             if (state.toolbarPosition == ToolbarPosition.BOTTOM && !state.isFullScreen) {
-                BrowserToolbar(state, vm, nav, onMenu = { showMenu = true })
+                BrowserToolbar(state, vm, nav, suggestions,
+                    modifier = Modifier.navigationBarsPadding(), onMenu = { showMenu = true })
             }
         }
     ) { padding ->
@@ -208,23 +219,14 @@ fun BrowserScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                // 下拉刷新：仅单指、页面滚动到顶部时触发；拒绝多指和缩放手势，
-                // 避免与 GeckoView 原生 PanZoomController 的 pinch-to-zoom 冲突。
-                val swipeModifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = { refreshGesture = false },
-                            onHorizontalDrag = { change, dragAmount ->
-                                // 左右滑动地址栏切换标签（在地址栏区域单独处理）。
-                                if (dragAmount > 60f) vm.goBack()
-                                else if (dragAmount < -60f) vm.goForward()
-                                change.consume()
-                            }
-                        )
-                    }
+                // 【修复①：竖向滑动卡顿不跟手】旧实现把 pointerInput 挂在整个 AndroidView 上，
+                // Compose 会先接管全部 MotionEvent，GeckoView 原生 PanZoomController 收不到
+                // 连续的触摸流，竖向滚动、惯性与双指缩放都被打断；而且 dragAmount>60 每次
+                // 回调都触发 goBack，会连续后退多次。
+                // 现在页面主体完全不拦截手势，滚动/缩放交还 GeckoView 原生处理；
+                // 前进/后退只在左右各 18dp 的窄热区做累计位移判定，一次手势只触发一次。
                 AndroidView(
-                    modifier = swipeModifier,
+                    modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         GeckoView(ctx).apply {
                             // 滚动截图由 GeckoView 在 attach 时自动接管 ScrollCaptureCallback，
@@ -246,6 +248,12 @@ fun BrowserScreen(
                     }
                 )
             }
+
+            // 左右边缘窄热区：只在屏幕两侧拦截水平拖动，中间区域完全交给 GeckoView。
+            Box(Modifier.align(Alignment.CenterStart).width(18.dp).fillMaxHeight()
+                .edgeBackForward(onBack = { vm.goBack() }, onForward = { vm.goForward() }))
+            Box(Modifier.align(Alignment.CenterEnd).width(18.dp).fillMaxHeight()
+                .edgeBackForward(onBack = { vm.goBack() }, onForward = { vm.goForward() }))
 
             if (showFind) {
                 FindInPageBar(
@@ -377,40 +385,74 @@ private fun BrowserToolbar(
     state: com.local.geckobrowser.browser.BrowserUiState,
     vm: BrowserViewModel,
     nav: NavHostController,
+    suggestions: List<com.local.geckobrowser.feature.Suggestion>,
+    modifier: Modifier = Modifier,
     onMenu: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
-    Column(Modifier.fillMaxWidth()) {
+    // 输入中才展开联想；提交或点选后收起，避免列表常驻遮挡页面。
+    var suggestionsVisible by remember { mutableStateOf(false) }
+
+    /** 回车 / 键盘「前往」直接搜索或导航，不再依赖单独的搜索按钮。 */
+    fun commit() {
+        suggestionsVisible = false
+        vm.submitInput()
+        focusManager.clearFocus()
+    }
+
+    // 【修复④：隐私标签特殊标记】无痕标签整条工具栏换底色，并在地址栏左侧显示
+    // 无痕图标（优先于安全指示），让用户在任何页面都能一眼分辨普通/无痕会话。
+    Column(
+        modifier.fillMaxWidth().background(
+            if (state.isPrivate) MaterialTheme.colorScheme.secondaryContainer
+            else Color.Transparent
+        )
+    ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically) {
+            if (state.isPrivate) {
+                Icon(Icons.Default.VisibilityOff, contentDescription = "无痕标签",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(end = 8.dp))
+                Text("无痕", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(end = 4.dp))
+            }
             OutlinedTextField(
                 value = state.input,
-                onValueChange = { vm.onInput(it) },
+                onValueChange = { vm.onInput(it); suggestionsVisible = true },
                 modifier = Modifier.weight(1f).height(52.dp),
                 singleLine = true,
-                // 【修复①】旧实现没有 ImeAction / KeyboardActions，用户输入网址按回车
-                // 完全没反应，只能点下面的「搜索」AssistChip，看起来像「标签页不加载网页」。
+                // 【修复⑤】删除原来的「搜索」AssistChip，回车 / 前往 / 搜索 / 完成
+                // 均直接提交：URL 直接导航，非 URL 文本走当前默认搜索引擎。
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = {
-                    vm.submitInput()
-                    focusManager.clearFocus()
-                }),
+                keyboardActions = KeyboardActions(
+                    onGo = { commit() },
+                    onSearch = { commit() },
+                    onDone = { commit() }
+                ),
                 textStyle = MaterialTheme.typography.bodyMedium,
                 leadingIcon = {
                     Icon(
-                        if (state.isSecure) Icons.Default.Lock else Icons.Default.Warning,
-                        contentDescription = if (state.isSecure) "HTTPS 安全连接" else "不安全连接"
+                        if (state.isPrivate) Icons.Default.VisibilityOff
+                        else if (state.isSecure) Icons.Default.Lock
+                        else Icons.Default.Warning,
+                        contentDescription = when {
+                            state.isPrivate -> "无痕标签"
+                            state.isSecure -> "HTTPS 安全连接"
+                            else -> "不安全连接"
+                        }
                     )
                 },
                 trailingIcon = {
-                    Row {
-                        IconButton(onClick = { if (state.isLoading) vm.stop() else vm.reload() }) {
-                            Icon(if (state.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                                contentDescription = if (state.isLoading) "停止" else "刷新")
-                        }
+                    IconButton(onClick = { if (state.isLoading) vm.stop() else vm.reload() }) {
+                        Icon(if (state.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                            contentDescription = if (state.isLoading) "停止" else "刷新")
                     }
                 },
-                placeholder = { Text("搜索或输入网址") }
+                placeholder = {
+                    Text(if (state.isPrivate) "无痕浏览 · 搜索或输入网址" else "搜索或输入网址")
+                }
             )
             IconButton(onClick = { nav.navigate(Routes.TABS) }) {
                 Card { Text(" ${state.tabCount} ", style = MaterialTheme.typography.labelMedium) }
@@ -419,14 +461,73 @@ private fun BrowserToolbar(
                 Icon(Icons.Default.MoreVert, contentDescription = "更多菜单")
             }
         }
-        // 自动补全：按历史 / 书签 / 标签 / 搜索分组，键盘上下选择与回车确认由 TextField 键盘事件处理。
-        val suggestions by vm.autocomplete.collectAsState()
-        if (suggestions.isNotEmpty()) {
-            AssistChip(onClick = { vm.submitInput() }, label = { Text("搜索") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "搜索建议") })
+
+        // 自动补全：本地历史 / 书签 / 已打开标签 / 固定标签联想，点击即导航。
+        // 不再提供「搜索」按钮，回车即按当前默认搜索引擎搜索。
+        if (suggestionsVisible && suggestions.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 6.dp)) {
+                Column(Modifier.fillMaxWidth()) {
+                    suggestions.take(6).forEach { item ->
+                        TextButton(
+                            onClick = {
+                                suggestionsVisible = false
+                                // SEARCH 类型用 "search:关键词" 占位；其余是真实 URL。
+                                if (item.url.startsWith("search:")) {
+                                    vm.submitInput(item.url.removePrefix("search:"))
+                                } else {
+                                    vm.load(item.url)
+                                    vm.onInput(item.url)
+                                }
+                                focusManager.clearFocus()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                when (item.type) {
+                                    com.local.geckobrowser.feature.SuggestionType.BOOKMARK ->
+                                        Icons.Default.Bookmark
+                                    com.local.geckobrowser.feature.SuggestionType.HISTORY ->
+                                        Icons.Default.History
+                                    com.local.geckobrowser.feature.SuggestionType.SEARCH ->
+                                        Icons.Default.Search
+                                    else -> Icons.Default.OpenInNew
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(item.title, Modifier.weight(1f).padding(start = 8.dp),
+                                maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
         }
     }
 }
+
+/**
+ * 【修复①】左右边缘前进/后退手势：只在窄热区拦截水平拖动。
+ * 累计位移超过阈值才在手势结束时触发一次，避免拖动过程中连续 goBack/goForward。
+ * 页面主体的竖向滚动与双指缩放完全交给 GeckoView 原生 PanZoomController。
+ */
+private fun Modifier.edgeBackForward(onBack: () -> Unit, onForward: () -> Unit): Modifier =
+    pointerInput(onBack, onForward) {
+        var total = 0f
+        var fired = false
+        detectHorizontalDragGestures(
+            onDragStart = { total = 0f; fired = false },
+            onDragEnd = {
+                if (!fired) {
+                    when {
+                        total > 120f -> onBack()      // 右滑：返回
+                        total < -120f -> onForward()  // 左滑：前进
+                    }
+                    fired = true
+                }
+            },
+            onHorizontalDrag = { change, dragAmount -> total += dragAmount; change.consume() }
+        )
+    }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -467,7 +568,8 @@ private fun BrowserMenuSheet(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     MenuAction(Icons.Default.Add, "新建标签") { vm.newTab(); onDismiss() }
                     MenuAction(Icons.Default.VisibilityOff, "无痕标签") { vm.newTab(privateMode = true); onDismiss() }
-                    MenuAction(Icons.Default.History, "书签") { nav.navigate(Routes.BOOKMARKS); onDismiss() }
+                    // 书签以前误用 History 图标，与「历史」重复；改用 Material 书签图标。
+                    MenuAction(Icons.Default.Bookmark, "书签") { nav.navigate(Routes.BOOKMARKS); onDismiss() }
                     MenuAction(Icons.Default.History, "历史") { nav.navigate(Routes.HISTORY); onDismiss() }
                 }
             }

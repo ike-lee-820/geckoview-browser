@@ -883,3 +883,18 @@ at `WebExtensionController.ensureBuiltIn`（堆栈经 `ThreadUtils.assertOnHandl
 | ④ | `Scaffold` 增加 `Modifier.imePadding()`，配合既有 `WindowCompat.setDecorFitsSystemWindows(window, false)` 与 `windowSoftInputMode=adjustResize`，底部 bottomBar 随 IME 抬升 | 纯 Compose WindowInsets，未调用 GeckoView API |
 
 未新增任何 `@ExperimentalGeckoViewApi` 调用；所有 GeckoView 调用均可在既有 JavaDoc 核对清单中找到对应签名。
+
+## 八、手势/Insets/图标/隐私标记/地址栏提交变更核对（2026-11-07）
+
+用户要求：①竖向滑动卡顿不跟手 ②预留状态栏与系统导航条空间 ③书签图标不对
+④无痕标签无特殊标记 ⑤删除搜索按钮、回车直接搜索。
+
+| 项 | 根因与修复 | GeckoView API 核对 |
+|---|---|---|
+| ① | `AndroidView` 上挂了全屏 `pointerInput { detectHorizontalDragGestures { change.consume() } }`，Compose 先接管全部 MotionEvent，GeckoView 原生 `PanZoomController` 收不到连续触摸流，竖向滚动/惯性/双指缩放被破坏；且 `dragAmount>60` 每次回调都 `goBack()`。**移除内容区所有手势拦截**，改为左右各 18dp 窄热区上做累计位移判定，一次手势只触发一次前进/后退 | 未新增 GeckoView 调用；符合规格 4.11「双击/双指缩放由 GeckoView 原生 PanZoomController 支持，不得拦截」。`goBack()` / `goForward()` 仍是 `GeckoSession` 既有方法 |
+| ② | edge-to-edge 下 `Scaffold` 的 `contentWindowInsets` 只作用于 content，topBar/bottomBar 不吃 inset，导致地址栏顶进状态栏、底部工具栏压住系统导航条。给全部屏幕 topBar 加 `statusBarsPadding()`、有 bottomBar 的加 `navigationBarsPadding()`；BrowserScreen 显式 `contentWindowInsets = WindowInsets(0,0,0,0)` 避免重复留白，并保留 `imePadding()` 让键盘抬升 | 纯 Compose `WindowInsets`，未调用 GeckoView API |
+| ③ | 菜单「书签」误用 `Icons.Default.History`，与「历史」重复 → 改为 `Icons.Default.Bookmark` | 纯 Material Icons |
+| ④ | `TabsScreen.TabCard` 不读取 `isPrivate` → 无痕卡片改 `secondaryContainer` 底色 + `VisibilityOff` 图标 + 「无痕」文字；地址栏在无痕时整条换底色、左侧显示无痕图标与提示文案。`BrowserUiState.isPrivate` 由 `syncActiveTabToUi()` 从 `TabState.isPrivate` 写入（既有逻辑，本次仅消费） | 未新增 GeckoView 调用 |
+| ⑤ | 删除常驻 `AssistChip("搜索")`；`KeyboardActions` 的 `onGo / onSearch / onDone` 统一调用 `submitInput()`，URL 直接导航、非 URL 走默认搜索引擎。自动补全改为输入时展开的下拉列表（本地历史/书签/标签/搜索联想），点击即导航 | `submitInput()` 最终仍只调用 `GeckoSession.loadUri(String)`，签名不变 |
+
+未新增任何 `@ExperimentalGeckoViewApi` 调用；所有 GeckoView 调用均为既有清单中的方法。

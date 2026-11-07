@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,9 +20,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,7 +60,9 @@ fun TabsScreen(vm: BrowserViewModel, nav: NavHostController) {
 
     Scaffold(
         topBar = {
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 顶部状态栏安全区：edge-to-edge 下搜索框不能顶进状态栏。
+            Row(Modifier.statusBarsPadding().fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(value = query, onValueChange = { query = it },
                     modifier = Modifier.weight(1f), placeholder = { Text("搜索标签") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = "搜索标签") }, singleLine = true)
@@ -66,7 +72,9 @@ fun TabsScreen(vm: BrowserViewModel, nav: NavHostController) {
             }
         },
         bottomBar = {
-            Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            // 底部系统导航条安全区：三键/手势条不能被按钮压住。
+            Row(Modifier.navigationBarsPadding().fillMaxWidth().padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly) {
                 Button(onClick = { vm.newTab(privateMode = true) }) { Text("新建无痕标签") }
                 Button(onClick = { groupDialog = true }) { Text("新建分组") }
                 if (selected.isNotEmpty()) {
@@ -81,13 +89,13 @@ fun TabsScreen(vm: BrowserViewModel, nav: NavHostController) {
             if (pinned.isNotEmpty()) {
                 item { Text("固定标签", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(12.dp)) }
                 items(pinned) { tab ->
-                    TabCard(tab.id, tab.title, tab.url, tab.groupId, vm, selected,
+                    TabCard(tab.id, tab.title, tab.url, tab.groupId, tab.isPrivate, vm, selected,
                         { id, checked -> selected = if (checked) selected + id else selected - id })
                 }
             }
             item { Text("标签（${normal.size}）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(12.dp)) }
             items(normal, key = { it.id }) { tab ->
-                TabCard(tab.id, tab.title, tab.url, tab.groupId, vm, selected,
+                TabCard(tab.id, tab.title, tab.url, tab.groupId, tab.isPrivate, vm, selected,
                     { id, checked -> selected = if (checked) selected + id else selected - id })
             }
             item {
@@ -128,17 +136,30 @@ fun TabsScreen(vm: BrowserViewModel, nav: NavHostController) {
 
 @Composable
 private fun TabCard(
-    id: String, title: String, url: String, groupId: String?,
+    id: String, title: String, url: String, groupId: String?, isPrivate: Boolean,
     vm: BrowserViewModel, selected: Set<String>, onSelect: (String, Boolean) -> Unit
 ) {
+    // 【修复④：隐私标签特殊标记】无痕标签用不同的卡片底色 + 无痕图标 + 「无痕」文字，
+    // 与普通标签一眼可区分；固定标签仍单独分组展示。
     Card(
         onClick = { vm.switchTab(id) },
+        colors = CardDefaults.cardColors(
+            containerColor = if (isPrivate) MaterialTheme.colorScheme.secondaryContainer
+            else MaterialTheme.colorScheme.surface
+        ),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (groupId != null) {
                 val color = vm.manager.groups.firstOrNull { it.id == groupId }?.colorArgb ?: 0xFF1B5E20
                 Box(Modifier.width(4.dp).height(40.dp).background(Color(color.toInt())))
+            }
+            if (isPrivate) {
+                Icon(Icons.Default.VisibilityOff, contentDescription = "无痕标签",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                Text("无痕", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(start = 4.dp, end = 8.dp))
             }
             Checkbox(checked = selected.contains(id), onCheckedChange = { onSelect(id, it) })
             Column(Modifier.weight(1f)) {
