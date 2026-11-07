@@ -58,3 +58,16 @@ CI 诊断已确认：早期版本复用 AGP 自动生成的 debug 签名，而 G
 - 安装后：以后每次更新都能直接覆盖安装，不会再丢数据。
 - **设置 → 备份与恢复**：导出为本地 JSON（SAF 选择保存位置），覆盖 Room 全部表与全部偏好；已保存的密码用导出时设置的口令（PBKDF2 + AES/GCM）重新加密，导入时用同一口令解密并写入新设备的 Android Keystore。不提供任何云端导出/同步。
 - 应用内更新在点击安装前会比对 APK 与当前应用的签名证书；不一致时不再弹出含糊的「应用未安装」，而是明确提示先备份、卸载、重装、恢复。
+
+### 进阶：换签名时保留旧版全部数据（需电脑 + USB 调试）
+
+普通「设置 → 卸载」会清空 `/data/data`。如果旧版数据非常重要，可用 adb 卸载 APK 但保留数据目录，再安装新签名包——此时系统里没有「已安装的旧包」可供比对签名，数据目录会被新包直接复用，连 Android Keystore 里的密码密钥也保留：
+
+```bash
+adb shell pm uninstall -k com.local.geckobrowser   # 只卸载 APK，保留数据
+adb install -r geckoview-browser-latest.apk        # 安装固定签名版，沿用原数据
+```
+
+若 `pm uninstall -k` 在当前系统被拒绝，只能用 root / 自定义 recovery 直接备份并回写 `/data/data/com.local.geckobrowser`，或依赖 ROM 自带的整机应用数据备份。没有电脑或 root 时，这一次的数据清空无法避免。
+
+装好固定签名版之后，请立刻到「设置 → 备份与恢复」导出一份备份，后续任何更新都不会再丢数据。
