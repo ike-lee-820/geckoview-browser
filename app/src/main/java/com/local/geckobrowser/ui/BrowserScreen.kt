@@ -188,7 +188,7 @@ fun BrowserScreen(
         },
         bottomBar = {
             if (state.toolbarPosition == ToolbarPosition.BOTTOM && !state.isFullScreen) {
-                BrowserToolbar(state, vm, nav, onVoice = onRequestVoice, onMenu = { showMenu = true })
+                BrowserToolbar(state, vm, nav, onMenu = { showMenu = true })
             }
         }
     ) { padding ->
