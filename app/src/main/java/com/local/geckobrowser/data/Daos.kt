@@ -93,7 +93,8 @@ interface RecentClosedDao {
 @Dao
 interface SearchEngineDao {
     @Query("SELECT * FROM search_engines") fun all(): Flow<List<SearchEngineEntity>>
-    @Query("SELECT * FROM search_engines WHERE isDefault = 1 LIMIT 1") suspend fun default(): SearchEngineEntity?
+    // 方法名不能叫 default：Java 关键字会让 Room/KSP 生成的实现类无法覆盖该 suspend 方法。
+    @Query("SELECT * FROM search_engines WHERE isDefault = 1 LIMIT 1") suspend fun getDefaultEngine(): SearchEngineEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insert(item: SearchEngineEntity)
     @Query("UPDATE search_engines SET isDefault = 0") suspend fun clearDefault()
     @Query("UPDATE search_engines SET isDefault = 1 WHERE id = :id") suspend fun setDefault(id: String)

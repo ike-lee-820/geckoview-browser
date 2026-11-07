@@ -44,7 +44,7 @@ object SearchEngineManager {
 
     suspend fun searchUrl(text: String, prefs: PreferencesDataStore? = null): String {
         val db = AppDatabase.build(appContextHolder)
-        val engine = db.searchEngineDao().default() ?: builtIn.first()
+        val engine = db.searchEngineDao().getDefaultEngine() ?: builtIn.first()
         return engine.template.replace("%s", Uri.encode(text.trim()))
     }
 
